@@ -46,10 +46,11 @@ def run_probe(
     logger.info("Starting probe run")
     started_at = datetime.now(timezone.utc)
 
-    # 1. Fetch tasks from all configured projects
+    # 1. Fetch tasks from all configured projects + lifestyle habits
     all_tasks: list[Task] = []
     for project_key in config["todoist"]["projects"]:
         all_tasks.extend(todoist.get_today_and_overdue(project_key))
+    all_tasks.extend(todoist.get_lifestyle_habits())
 
     if not all_tasks:
         logger.info("No tasks — skipping probe")
@@ -105,7 +106,11 @@ def run_probe(
     )
     logger.info(f"Probe outcome: {outcome}")
 
-    # 6. Log session + update task memory
+    # 6. Write habit log back to Todoist description (habits only)
+    if selected_task.is_habit:
+        _write_habit_log(selected_task, conversation_history, outcome, todoist, claude, config)
+
+    # 7. Log session + update task memory
     raw_transcript = json.dumps(conversation_history)
 
     # Summarise with cheap model
@@ -269,7 +274,10 @@ def _summarise_session(
 
 def _format_task_for_prompt(task: Task) -> str:
     """Formats a Task for prompt injection."""
-    lines = [
+    lines = []
+    if task.is_habit:
+        lines.append("Type: LIFESTYLE HABIT")
+    lines += [
         f"Content: {task.content}",
         f"Section: {task.section_name}",
         f"Project: {task.project_name}",
@@ -308,6 +316,7 @@ def _format_task_for_selection(task: Task, task_memory: Optional[TaskMemory]) ->
     Compact one-liner for the task selection prompt.
     Claude needs just enough to make a good choice.
     """
+    habit_tag = " [HABIT]" if task.is_habit else ""
     overdue = f", overdue {task.days_overdue}d" if task.is_overdue else ""
     from claw.memory import _days_ago
     if task_memory and task_memory.last_probed_at:
@@ -321,9 +330,50 @@ def _format_task_for_selection(task: Task, task_memory: Optional[TaskMemory]) ->
         snoozed = f", SNOOZED until {task_memory.snoozed_until.date()}"
 
     return (
-        f"- task_id: {task.id}, [{task.section_name}] {task.content} "
+        f"- task_id: {task.id},{habit_tag} [{task.section_name}] {task.content} "
         f"({task.project_name}){overdue}{memory_str}{snoozed}"
     )
+
+
+def _write_habit_log(
+    task: Task,
+    history: list[dict],
+    outcome: str,
+    todoist: TodoistClient,
+    claude: ClaudeClient,
+    config: dict,
+) -> None:
+    """
+    Appends a timestamped log entry to the Todoist task description after a habit probe.
+    Always writes a one-liner; adds an extended note only when something meaningful happened.
+    """
+    from datetime import date as _date
+    raw = claude.complete(
+        system=prompts.get_prompt("HABIT_LOG_SYSTEM"),
+        user=f"Habit: {task.content}\nOutcome: {outcome}\n\n{json.dumps(history)}",
+        max_tokens=120,
+        model=config["claude"]["selection_model"],
+    )
+    stripped = raw.strip()
+    if stripped.startswith("```"):
+        stripped = "\n".join(stripped.split("\n")[1:-1]).strip()
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        logger.warning(f"Habit log returned non-JSON: {raw!r}")
+        return
+
+    today = _date.today().strftime("%-d %b")
+    entry = f"\n[{today}] {parsed['log']}"
+    if parsed.get("note"):
+        entry += f" — {parsed['note']}"
+
+    new_desc = (task.description or "").rstrip() + entry
+    try:
+        todoist.update_task_description(task.id, new_desc)
+        logger.info(f"Appended habit log to task {task.id}: {entry.strip()}")
+    except Exception as e:
+        logger.warning(f"Failed to write habit log to Todoist: {e}")
 
 
 def main() -> None:

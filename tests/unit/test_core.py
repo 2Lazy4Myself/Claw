@@ -27,6 +27,7 @@ def make_task(
     due_date=None,
     days_overdue=0,
     priority=1,
+    is_habit=False,
 ) -> Task:
     return Task(
         id=id,
@@ -41,6 +42,7 @@ def make_task(
         priority=priority,
         is_overdue=days_overdue > 0,
         days_overdue=days_overdue,
+        is_habit=is_habit,
     )
 
 
@@ -185,6 +187,18 @@ class TestFormatTaskForPrompt:
         result = _format_task_for_prompt(task)
         assert "Waiting on Bob" in result
 
+    def test_habit_shows_lifestyle_type_marker(self):
+        from claw.probe import _format_task_for_prompt
+        task = make_task(is_habit=True, content="Strength Training")
+        result = _format_task_for_prompt(task)
+        assert "LIFESTYLE HABIT" in result
+
+    def test_non_habit_has_no_type_marker(self):
+        from claw.probe import _format_task_for_prompt
+        task = make_task(is_habit=False)
+        result = _format_task_for_prompt(task)
+        assert "LIFESTYLE HABIT" not in result
+
 
 class TestFormatTaskMemory:
     def test_none_returns_no_history_message(self):
@@ -222,6 +236,12 @@ class TestFormatTaskForSelection:
         task = make_task()
         result = _format_task_for_selection(task, None)
         assert "never probed" in result
+
+    def test_habit_flagged_in_selection(self):
+        from claw.probe import _format_task_for_selection
+        task = make_task(is_habit=True, content="Get on top of boozing")
+        result = _format_task_for_selection(task, None)
+        assert "[HABIT]" in result
 
     def test_snoozed_flagged(self):
         from claw.probe import _format_task_for_selection

@@ -42,6 +42,15 @@ PROJECTS: dict[str, dict[str, str]] = {
         "WAITING":     "6gXj6J8gq3xH435J",
         "UNPROCESSED": "6gXj6jqqqGmvp6Vr",
     },
+    "claw": {
+        "project_id": "6gW4jC59ChjCjpFG",
+        "LIFESTYLE":  "6gfjQXwJfGRVvJGG",
+    },
+}
+
+# Section IDs that mark a task as a lifestyle habit rather than a regular task.
+HABIT_SECTIONS: set[str] = {
+    "6gfjQXwJfGRVvJGG",  # Claw / Life Style
 }
 
 SECTION_DISPLAY: dict[str, str] = {
@@ -73,7 +82,7 @@ class Task:
     content: str
     description: str
     project_id: str
-    project_name: str   # "work" or "home"
+    project_name: str   # "work", "home", or "claw"
     section_id: str
     section_name: str   # Human-readable section: "Today", "Next 2-3 Days", etc.
     labels: list[str]
@@ -81,6 +90,7 @@ class Task:
     priority: int       # 1 (normal) → 4 (urgent), Todoist native scale
     is_overdue: bool    # due_date is in the past
     days_overdue: int   # 0 if not overdue
+    is_habit: bool      # True if this is a lifestyle habit (Life Style section)
 
     @property
     def display_name(self) -> str:
@@ -140,6 +150,39 @@ class TodoistClient:
                     results.append(task)
         return results
 
+    def get_lifestyle_habits(self) -> list[Task]:
+        """
+        All non-completed tasks in the Life Style section of the Claw project.
+        These are ongoing habits, not one-off tasks.
+        """
+        project = self._project("claw")
+        section_map = self._section_map("claw")
+        today = date.today()
+        raw = self._fetch_all(
+            f"{self.BASE_URL}/tasks", {"project_id": project["project_id"]}
+        )
+        return [
+            self._parse(r, "claw", section_map.get(r.get("section_id", ""), ""), today)
+            for r in raw
+            if not r.get("is_completed")
+            and r.get("section_id") == project["LIFESTYLE"]
+        ]
+
+    def update_task_description(self, task_id: str, new_description: str) -> None:
+        """
+        Replaces a task's description via the Todoist API.
+        Used to append timestamped habit log entries after a probe conversation.
+        """
+        try:
+            resp = self._session.post(
+                f"{self.BASE_URL}/tasks/{task_id}",
+                json={"description": new_description},
+                timeout=10,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            raise TodoistAPIError(str(exc)) from exc
+
     def get_waiting_for(self, project_key: str) -> list[Task]:
         """Tasks in the Waiting For section."""
         wid = self._project(project_key)["WAITING"]
@@ -194,6 +237,7 @@ class TodoistClient:
 
         is_overdue = due_date is not None and due_date < today
         days_overdue = (today - due_date).days if is_overdue else 0
+        section_id = raw.get("section_id", "")
 
         return Task(
             id=raw["id"],
@@ -201,13 +245,14 @@ class TodoistClient:
             description=raw.get("description", ""),
             project_id=raw.get("project_id", ""),
             project_name=project_key,
-            section_id=raw.get("section_id", ""),
+            section_id=section_id,
             section_name=section_name,
             labels=raw.get("labels", []),
             due_date=due_date,
             priority=raw.get("priority", 1),
             is_overdue=is_overdue,
             days_overdue=days_overdue,
+            is_habit=section_id in HABIT_SECTIONS,
         )
 
 
