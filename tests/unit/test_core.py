@@ -20,7 +20,9 @@ def make_task(
     content="Write the quarterly report",
     description="",
     project_id="proj-1",
-    project_name="Work",
+    project_name="work",
+    section_id="sec-today",
+    section_name="Today",
     labels=None,
     due_date=None,
     days_overdue=0,
@@ -32,9 +34,10 @@ def make_task(
         description=description,
         project_id=project_id,
         project_name=project_name,
+        section_id=section_id,
+        section_name=section_name,
         labels=labels or [],
-        due_date=due_date or date.today(),
-        created_at=datetime.now() - timedelta(days=10),
+        due_date=due_date,
         priority=priority,
         is_overdue=days_overdue > 0,
         days_overdue=days_overdue,
@@ -124,9 +127,9 @@ class TestConfigValidation:
         from claw.config import _validate
         config = {
             "telegram": {"allowed_user_id": 123},
-            "todoist": {},
+            "todoist": {"projects": ["work", "home"]},
             "memory": {"db_path": "data/claw.db"},
-            "claude": {"model": "claude-sonnet-4-20250514"},
+            "claude": {"model": "claude-sonnet-4-20250514", "selection_model": "claude-haiku-4-5-20251001"},
         }
         _validate(config)  # Should not raise
 
@@ -136,7 +139,7 @@ class TestConfigValidation:
             "telegram": {"allowed_user_id": 123},
             # todoist missing
             "memory": {"db_path": "data/claw.db"},
-            "claude": {"model": "claude-sonnet-4-20250514"},
+            "claude": {"model": "claude-sonnet-4-20250514", "selection_model": "claude-haiku-4-5-20251001"},
         }
         with pytest.raises(ValueError, match="todoist"):
             _validate(config)
@@ -145,9 +148,20 @@ class TestConfigValidation:
         from claw.config import _validate
         config = {
             "telegram": {"allowed_user_id": 123},
-            "todoist": {},
+            "todoist": {"projects": ["work"]},
             "memory": {},  # db_path missing
-            "claude": {"model": "claude-sonnet-4-20250514"},
+            "claude": {"model": "claude-sonnet-4-20250514", "selection_model": "claude-haiku-4-5-20251001"},
         }
         with pytest.raises(ValueError, match="db_path"):
+            _validate(config)
+
+    def test_missing_selection_model_raises_value_error(self):
+        from claw.config import _validate
+        config = {
+            "telegram": {"allowed_user_id": 123},
+            "todoist": {"projects": ["work"]},
+            "memory": {"db_path": "data/claw.db"},
+            "claude": {"model": "claude-sonnet-4-20250514"},  # selection_model missing
+        }
+        with pytest.raises(ValueError, match="selection_model"):
             _validate(config)

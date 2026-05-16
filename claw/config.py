@@ -60,6 +60,7 @@ def _validate(config: dict) -> None:
         ("todoist",),
         ("memory", "db_path"),
         ("claude", "model"),
+        ("claude", "selection_model"),
     ]
     for key_path in required:
         node = config

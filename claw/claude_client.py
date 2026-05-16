@@ -39,6 +39,7 @@ class ClaudeClient:
         user: str,
         max_tokens: int,
         retries: int = 2,
+        model: str = None,
     ) -> str:
         """
         Single-turn completion. Returns the assistant's text response.
@@ -48,6 +49,8 @@ class ClaudeClient:
             user: User message.
             max_tokens: Maximum response tokens.
             retries: Number of retry attempts on transient errors.
+            model: Override the default model. Pass config["claude"]["selection_model"]
+                   for cheap/fast calls (task selection, session summary).
 
         Returns:
             Assistant response as a plain string.
@@ -60,6 +63,7 @@ class ClaudeClient:
             system=system,
             max_tokens=max_tokens,
             retries=retries,
+            model=model,
         )
 
     def complete_with_history(
@@ -68,6 +72,7 @@ class ClaudeClient:
         messages: list[dict],
         max_tokens: int,
         retries: int = 2,
+        model: str = None,
     ) -> str:
         """
         Multi-turn completion. Caller provides the full message history.
@@ -76,6 +81,7 @@ class ClaudeClient:
             system: System prompt.
             messages: List of {"role": "user"|"assistant", "content": "..."} dicts.
             max_tokens: Maximum response tokens.
+            model: Override the default model (see complete()).
 
         Returns:
             Assistant response as a plain string.
@@ -85,6 +91,7 @@ class ClaudeClient:
             system=system,
             max_tokens=max_tokens,
             retries=retries,
+            model=model,
         )
 
     def _call_with_retry(
@@ -93,8 +100,9 @@ class ClaudeClient:
         system: str,
         max_tokens: int,
         retries: int,
+        model: str = None,
     ) -> str:
-        model = self._config["claude"]["model"]
+        model = model or self._config["claude"]["model"]
         last_error = None
 
         for attempt in range(retries + 1):

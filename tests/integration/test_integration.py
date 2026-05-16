@@ -36,21 +36,15 @@ skip_if_no_creds = pytest.mark.skipif(
 @pytest.mark.integration
 @skip_if_no_creds
 class TestTodoistIntegration:
-    def test_can_fetch_projects(self):
+    def test_can_fetch_today_and_overdue(self):
         from claw.todoist_client import from_env
         client = from_env()
-        projects = client.get_projects()
-        assert isinstance(projects, dict)
-
-    def test_can_fetch_today_tasks(self):
-        from claw.todoist_client import from_env
-        client = from_env()
-        tasks = client.get_today_tasks()
+        tasks = client.get_today_and_overdue("work")
         assert isinstance(tasks, list)
-        # Each item should be a Task with expected fields
         for task in tasks:
             assert hasattr(task, "id")
             assert hasattr(task, "content")
+            assert hasattr(task, "section_name")
             assert hasattr(task, "is_overdue")
 
 
@@ -59,7 +53,7 @@ class TestTodoistIntegration:
 class TestClaudeIntegration:
     def test_single_turn_completion_returns_string(self):
         from claw.claude_client import ClaudeClient
-        config = {"claude": {"model": "claude-sonnet-4-20250514"}}
+        config = {"claude": {"model": "claude-sonnet-4-20250514", "selection_model": "claude-haiku-4-5-20251001"}}
         client = ClaudeClient.from_env(config)
         result = client.complete(
             system="You are a helpful assistant. Reply in 5 words or fewer.",
@@ -70,12 +64,12 @@ class TestClaudeIntegration:
         assert len(result) > 0
 
     def test_task_selection_returns_parseable_json(self):
-        """Verifies the task selection prompt returns valid JSON."""
+        """Verifies the task selection prompt returns valid JSON when using cheap model."""
         import json
         from claw.claude_client import ClaudeClient
         from claw import prompts
 
-        config = {"claude": {"model": "claude-sonnet-4-20250514"}}
+        config = {"claude": {"model": "claude-sonnet-4-20250514", "selection_model": "claude-haiku-4-5-20251001"}}
         client = ClaudeClient.from_env(config)
 
         result = client.complete(
@@ -87,6 +81,7 @@ class TestClaudeIntegration:
                 )
             ),
             max_tokens=150,
+            model=config["claude"]["selection_model"],
         )
         parsed = json.loads(result)
         assert "task_id" in parsed

@@ -44,8 +44,12 @@ memory:
 
 # ─── Claude ──────────────────────────────────────────────────────────────────
 claude:
-  # Model to use. Do not change unless you know what you're doing.
+  # Model for briefing and probe conversations — where tone and empathy matter.
   model: "claude-sonnet-4-20250514"
+
+  # Model for task selection and session summarisation — structured output, no creativity needed.
+  # Haiku is a fraction of the cost and perfectly capable for JSON/summary tasks.
+  selection_model: "claude-haiku-4-5-20251001"
 
   # Max tokens for briefing responses. Briefings should be concise.
   briefing_max_tokens: 400
