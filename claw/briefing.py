@@ -50,6 +50,9 @@ def run_briefing(
         all_tasks.extend(todoist.get_today_and_overdue(project_key))
     logger.info(f"Fetched {len(all_tasks)} tasks from Todoist")
 
+    habits = todoist.get_lifestyle_habits()
+    logger.info(f"Fetched {len(habits)} lifestyle habits")
+
     if not all_tasks:
         logger.info("No tasks today — sending all-clear")
         telegram.send_message("Nothing on the board today. Enjoy the space.")
@@ -63,12 +66,14 @@ def run_briefing(
 
     # 3. Build task list string for prompt
     task_list = _format_tasks_for_prompt(all_tasks, config["behaviour"]["briefing_max_tasks"])
+    habit_summary = _format_habits_for_prompt(habits)
 
     # 4. Ask Claude for the briefing
     briefing_text = claude.complete(
         system=prompts.get_prompt("BRIEFING_SYSTEM"),
         user=prompts.BRIEFING_USER_TEMPLATE.format(
             task_list=task_list,
+            habit_summary=habit_summary,
             memory_context=memory_context,
         ),
         max_tokens=config["claude"]["briefing_max_tokens"],
@@ -106,6 +111,21 @@ def _format_tasks_for_prompt(tasks: list[Task], max_tasks: int) -> str:
             f"- [{task.section_name}] {task.content} ({task.project_name}){overdue}"
         )
     return "\n".join(lines)
+
+
+def _format_habits_for_prompt(habits: list[Task]) -> str:
+    if not habits:
+        return "No habits tracked."
+    lines = []
+    for habit in habits:
+        last_log = _last_log_line(habit.description)
+        lines.append(f"- {habit.content}: {last_log}")
+    return "\n".join(lines)
+
+
+def _last_log_line(description: str) -> str:
+    lines = [l.strip() for l in description.splitlines() if l.strip()]
+    return lines[-1] if lines else "no log yet"
 
 
 def main() -> None:

@@ -31,6 +31,7 @@ Rules you must follow:
 - If memory shows something the user committed to today, reference it naturally.
 - End with one light, open thought or question — not a call to action.
 - Do not use bullet points. Write like a person, not a project manager.
+- If lifestyle habits are provided, weave in one brief mention — especially if a habit shows ✗ or has no log yet. Don't list them all. One is enough.
 - Be concise. This is a morning message, not a report.
 - Tone: warm, direct. A little dry is fine. Never robotic.
 """
@@ -38,6 +39,9 @@ Rules you must follow:
 BRIEFING_USER_TEMPLATE = """
 Today's tasks from Todoist:
 {task_list}
+
+Lifestyle habits:
+{habit_summary}
 
 Memory context:
 {memory_context}
