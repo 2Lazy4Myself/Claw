@@ -120,6 +120,42 @@ class TestPromptLoader:
             prompts.get_prompt("NONEXISTENT_PROMPT", overrides={})
 
 
+# ─── Briefing task formatter ─────────────────────────────────────────────────
+
+class TestFormatTasksForPrompt:
+    def test_empty_list_returns_no_tasks_message(self):
+        from claw.briefing import _format_tasks_for_prompt
+        result = _format_tasks_for_prompt([], max_tasks=4)
+        assert "no tasks" in result.lower() or result == ""
+
+    def test_single_task_included(self):
+        from claw.briefing import _format_tasks_for_prompt
+        task = make_task(content="Write report", section_name="Today", project_name="work")
+        result = _format_tasks_for_prompt([task], max_tasks=4)
+        assert "Write report" in result
+        assert "Today" in result
+        assert "work" in result
+
+    def test_overdue_badge_shown(self):
+        from claw.briefing import _format_tasks_for_prompt
+        task = make_task(content="Fix bug", days_overdue=3)
+        result = _format_tasks_for_prompt([task], max_tasks=4)
+        assert "3d overdue" in result
+        assert "⚠️" in result
+
+    def test_non_overdue_has_no_badge(self):
+        from claw.briefing import _format_tasks_for_prompt
+        task = make_task(content="Review PR", days_overdue=0)
+        result = _format_tasks_for_prompt([task], max_tasks=4)
+        assert "overdue" not in result
+
+    def test_capped_at_max_tasks(self):
+        from claw.briefing import _format_tasks_for_prompt
+        tasks = [make_task(id=f"t{i}", content=f"Task {i}") for i in range(10)]
+        result = _format_tasks_for_prompt(tasks, max_tasks=3)
+        assert result.count("Task") == 3
+
+
 # ─── Config validation ────────────────────────────────────────────────────────
 
 class TestConfigValidation:

@@ -14,6 +14,7 @@ entirely — if we switch to webhooks in Phase 2, only this file changes.
 
 from __future__ import annotations
 import logging
+import math
 import os
 import time
 from typing import Optional
@@ -41,18 +42,17 @@ class TelegramClient:
         """
         Sends a message to the configured user.
 
-        Args:
-            text: Message text (plain text or Markdown).
-
         Raises:
             TelegramAPIError: If the API call fails.
         """
-        raise NotImplementedError("Phase 1 implementation")
+        self._post("sendMessage", {
+            "chat_id": self._allowed_user_id,
+            "text": text,
+        })
 
     def send_error(self, text: str) -> None:
         """
-        Sends an error alert. Uses error_chat_id (may be same as main user).
-        Swallows its own exceptions to avoid error loops.
+        Sends an error alert. Swallows its own exceptions to avoid error loops.
         """
         try:
             self._post("sendMessage", {
@@ -67,28 +67,80 @@ class TelegramClient:
         Polls for a reply from the allowed user within the timeout window.
 
         Returns the user's message text, or None if no reply arrived in time.
-        Only returns messages from allowed_user_id — ignores all others.
+        Only accepts messages from allowed_user_id. Ignores all others.
 
-        This is a blocking call. It should only be called after sending a message
-        that expects a reply (i.e. during a probe session).
+        This is a blocking call. Only call it after sending a message that
+        expects a reply (i.e. during a probe session).
 
-        Args:
-            timeout_seconds: How long to wait before giving up.
-
-        Returns:
-            The user's reply text, or None on timeout.
+        Uses long-polling: getUpdates with a server-side timeout so we don't
+        hammer the API. Tracks offset to avoid replaying old messages.
         """
-        raise NotImplementedError("Phase 1 implementation")
+        deadline = time.monotonic() + timeout_seconds
+        offset: Optional[int] = None
+
+        # Drain any pre-existing updates so we only receive new messages
+        offset = self._drain_updates()
+
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            poll_timeout = min(30, math.floor(remaining))
+
+            try:
+                params: dict = {"timeout": poll_timeout}
+                if offset is not None:
+                    params["offset"] = offset
+
+                resp = self._get("getUpdates", params)
+                updates = resp.get("result", [])
+
+                for update in updates:
+                    offset = update["update_id"] + 1
+                    message = update.get("message") or update.get("edited_message")
+                    if not message:
+                        continue
+                    from_id = message.get("from", {}).get("id")
+                    text = message.get("text", "")
+                    if from_id == self._allowed_user_id and text:
+                        return text
+
+            except TelegramAPIError as e:
+                logger.warning(f"Telegram poll error (retrying): {e}")
+                time.sleep(2)
+
+        return None
+
+    # ─── Internal ─────────────────────────────────────────────────────────────
+
+    def _drain_updates(self) -> Optional[int]:
+        """
+        Fetches any pending updates with timeout=0 and returns the next offset.
+        Prevents wait_for_reply from returning stale messages.
+        """
+        try:
+            resp = self._get("getUpdates", {"timeout": 0})
+            updates = resp.get("result", [])
+            if updates:
+                return updates[-1]["update_id"] + 1
+        except TelegramAPIError:
+            pass
+        return None
 
     def _post(self, method: str, payload: dict) -> dict:
-        """
-        Makes a POST request to the Telegram Bot API.
-
-        Raises:
-            TelegramAPIError: On non-2xx response or network failure.
-        """
         url = f"{self._base}/{method}"
         response = requests.post(url, json=payload, timeout=10)
+        if not response.ok:
+            raise TelegramAPIError(
+                f"Telegram API error {response.status_code}: {response.text}"
+            )
+        return response.json()
+
+    def _get(self, method: str, params: dict) -> dict:
+        url = f"{self._base}/{method}"
+        # Use a timeout slightly longer than the poll timeout so the socket doesn't close first
+        poll_timeout = params.get("timeout", 0)
+        response = requests.get(url, params=params, timeout=poll_timeout + 10)
         if not response.ok:
             raise TelegramAPIError(
                 f"Telegram API error {response.status_code}: {response.text}"

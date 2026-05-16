@@ -3,14 +3,9 @@ briefing.py
 
 Responsibility: Orchestrate the morning briefing flow.
 
-This module is the entry point for the morning cron job. It coordinates the
-other modules but contains no business logic of its own. If you find yourself
-writing task-filtering logic here, it belongs in todoist_client.py. If you're
-building a prompt string here, it belongs in prompts.py.
-
 Flow:
     1. Load config
-    2. Fetch today's tasks from Todoist
+    2. Fetch today's tasks from Todoist (all configured projects)
     3. Fetch recent memory context
     4. Ask Claude to write the briefing
     5. Send via Telegram
@@ -20,12 +15,14 @@ Flow:
 from __future__ import annotations
 import logging
 import sys
+import uuid
+from datetime import datetime, timezone
 
 from claw.claude_client import ClaudeClient
 from claw.config import load_config
 from claw.memory import MemoryStore, SessionRecord, build_context_block
 from claw.telegram_client import TelegramClient
-from claw.todoist_client import TodoistClient, from_env as todoist_from_env
+from claw.todoist_client import TodoistClient, Task, from_env as todoist_from_env
 from claw import prompts
 
 logger = logging.getLogger(__name__)
@@ -43,46 +40,37 @@ def run_briefing(
 
     All dependencies are passed in (not constructed here) so this function
     is testable with fakes/stubs without touching the network.
-
-    Args:
-        todoist: Configured Todoist client.
-        memory: Configured memory store.
-        claude: Configured Claude client.
-        telegram: Configured Telegram client.
-        config: Loaded config dict.
     """
     logger.info("Starting morning briefing")
+    started_at = datetime.now(timezone.utc)
 
-    # 1. Fetch tasks
-    tasks = todoist.get_today_tasks(
-        include_project_ids=config["todoist"]["include_project_ids"],
-        exclude_labels=config["todoist"]["exclude_labels"],
-    )
-    logger.info(f"Fetched {len(tasks)} tasks from Todoist")
+    # 1. Fetch tasks from all configured projects
+    all_tasks: list[Task] = []
+    for project_key in config["todoist"]["projects"]:
+        all_tasks.extend(todoist.get_today_and_overdue(project_key))
+    logger.info(f"Fetched {len(all_tasks)} tasks from Todoist")
 
-    if not tasks:
-        logger.info("No tasks today — sending light all-clear")
-        # TODO: send a brief "nothing on today" message
+    if not all_tasks:
+        logger.info("No tasks today — sending all-clear")
+        telegram.send_message("Nothing on the board today. Enjoy the space.")
         return
 
-    # 2. Fetch memory context
+    # 2. Fetch recent memory context
     recent_sessions = memory.get_recent_sessions(
         n=config["memory"]["recent_sessions_to_include"]
     )
     memory_context = build_context_block(None, recent_sessions)
 
     # 3. Build task list string for prompt
-    task_list = _format_tasks_for_prompt(tasks, config["behaviour"]["briefing_max_tasks"])
+    task_list = _format_tasks_for_prompt(all_tasks, config["behaviour"]["briefing_max_tasks"])
 
     # 4. Ask Claude for the briefing
-    system_prompt = prompts.get_prompt("BRIEFING_SYSTEM")
-    user_message = prompts.BRIEFING_USER_TEMPLATE.format(
-        task_list=task_list,
-        memory_context=memory_context,
-    )
     briefing_text = claude.complete(
-        system=system_prompt,
-        user=user_message,
+        system=prompts.get_prompt("BRIEFING_SYSTEM"),
+        user=prompts.BRIEFING_USER_TEMPLATE.format(
+            task_list=task_list,
+            memory_context=memory_context,
+        ),
         max_tokens=config["claude"]["briefing_max_tokens"],
     )
     logger.info("Received briefing from Claude")
@@ -92,17 +80,32 @@ def run_briefing(
     logger.info("Briefing sent")
 
     # 6. Log the session
-    # TODO: log SessionRecord
+    memory.log_session(SessionRecord(
+        session_id=str(uuid.uuid4()),
+        session_type="briefing",
+        started_at=started_at,
+        task_id=None,
+        engagement_signal=None,
+        summary=None,
+        raw_transcript=None,
+    ))
 
 
-def _format_tasks_for_prompt(tasks, max_tasks: int) -> str:
+def _format_tasks_for_prompt(tasks: list[Task], max_tasks: int) -> str:
     """
     Converts a list of Task objects to a plain-text block for prompt injection.
-    Caps at max_tasks to avoid overwhelming the prompt.
-
-    Pure function — no I/O. Tested in unit tests.
+    Caps at max_tasks. Pure function — no I/O.
     """
-    raise NotImplementedError("Phase 1 implementation")
+    if not tasks:
+        return "No tasks today."
+
+    lines = []
+    for task in tasks[:max_tasks]:
+        overdue = f" ⚠️ {task.days_overdue}d overdue" if task.is_overdue else ""
+        lines.append(
+            f"- [{task.section_name}] {task.content} ({task.project_name}){overdue}"
+        )
+    return "\n".join(lines)
 
 
 def main() -> None:
@@ -119,7 +122,6 @@ def main() -> None:
         run_briefing(todoist, memory, claude, telegram, config)
     except Exception as e:
         logger.error(f"Briefing failed: {e}", exc_info=True)
-        # Try to send error alert via Telegram
         try:
             telegram.send_error(f"Briefing failed: {e}")
         except Exception:
