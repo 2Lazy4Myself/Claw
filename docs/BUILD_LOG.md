@@ -8,37 +8,76 @@ This document is the living record of what was built, when, why, and what was le
 
 **Goal:** A working, deployable system that does the two core things: sends a morning briefing and can open a probe conversation about one stuck task. Memory is real but simple. Tone is right. Nothing is hardcoded.
 
-**Status:** 🔲 Not started
+**Status:** ✅ Complete — deployed to Unraid, 16 May 2026
 
 **Scope:**
 
-- [ ] `todoist_client.py` — fetch today's tasks, parse into normalised Task objects
-- [ ] `memory.py` — read/write per-task history and session log (SQLite)
-- [ ] `claude_client.py` — thin wrapper around Anthropic API, handles retries and format errors
-- [ ] `prompts.py` — BRIEFING_SYSTEM, PROBE_SYSTEM, PROBE_FOLLOWUP prompts (v1)
-- [ ] `telegram_client.py` — send message, receive reply via polling or webhook
-- [ ] `briefing.py` — orchestrates morning summary flow
-- [ ] `probe.py` — orchestrates single-task probe conversation
-- [ ] `listener.py` — handles inbound Telegram messages, routes to probe continuation
-- [ ] Unit tests for: task parsing, memory serialisation, prompt assembly
-- [ ] Integration tests for: Todoist fetch, Claude call, Telegram send
-- [ ] `config/config.example.yaml` — documented config template
-- [ ] `.env.example` — documented secrets template
-- [ ] `scripts/run_briefing.sh` and `scripts/run_probe.sh`
-- [ ] Cron-tested on Unraid
+- [x] `todoist_client.py` — section-aware task fetching (sections as temporal signal, not due dates); Todoist API v1 with cursor pagination
+- [x] `memory.py` — SQLite store for per-task probe history and session log; `build_context_block()` pure function for prompt injection
+- [x] `claude_client.py` — Anthropic API wrapper with retry on rate limit/connection errors; optional model override for cheap vs. powerful calls
+- [x] `prompts.py` — BRIEFING_SYSTEM, PROBE_SYSTEM, PROBE_FOLLOWUP, TASK_SELECTION prompts (v1); YAML override support for local tuning
+- [x] `telegram_client.py` — send message, long-polling reply listener with drain to avoid stale messages
+- [x] `briefing.py` — orchestrates morning summary; all projects, all today/overdue tasks, Claude writes the message
+- [x] `probe.py` — picks one task via cheap model (JSON selection), opens conversation with Sonnet, multi-turn loop, session logged with summary
+- [x] Unit tests: 35 passing, covering task model, memory context, prompt loading, config validation, all format functions, close detection
+- [x] Integration tests: Todoist fetch, Claude completion, memory roundtrip (tagged, excluded from default run)
+- [x] `config/config.example.yaml` — fully documented, dual model config (conversation vs. selection)
+- [x] `.env.example` — documented secrets template
+- [x] `scripts/run_briefing.sh` and `scripts/run_probe.sh`
+- [x] Deployed to Unraid as Docker container (Alpine + crond), cron at 08:00 and 18:00 Europe/London
+- [x] `listener.py` — not built; not needed for MVP. Probe session handles replies within its own polling window.
 
-**Key decisions to make during Phase 1:**
+**Key decisions made:**
 
-- SQLite vs JSON for memory store (SQLite preferred — queryable, atomic writes)
-- Webhook vs polling for Telegram (polling simpler for MVP, webhook for Phase 2)
-- How to handle multi-turn probe conversations (stateful listener loop vs stateless with memory)
+- SQLite for memory (atomic writes, queryable — JSON files have race condition risk)
+- Long-polling for Telegram (no public HTTPS endpoint on home network)
+- Multi-turn probe loop in `probe.py` itself (no separate listener process for MVP)
+- Two model tiers: `claude-sonnet-4-6` for conversation, `claude-haiku-4-5-20251001` for selection + summarisation
+- Sections as temporal signal — Jake's Todoist uses sections (Today / Next 2-3 Days / etc.) as the "when", not native due dates (ADR-006)
 
-**Definition of done:**
-Morning briefing fires, feels right. Probe picks one task, asks a real question, receives and logs the answer. Memory persists across restarts. No secrets in code.
+**What was learned:**
+
+- Haiku sometimes wraps JSON in markdown code fences despite explicit instructions — strip before parsing (now handled in `_select_task` and `_write_habit_log`)
+- `datetime.now()` vs `datetime.now(timezone.utc)` — naive datetimes cause off-by-one in day calculations when system timezone ≠ UTC; always use UTC-aware datetimes in tests
+- The conversation close heuristic (no question mark + short response) works well in practice; extension seam left for Phase 4 JSON-based detection
 
 ---
 
-**Phase 1 entries will be appended below as work progresses.**
+## Phase 1.5 — Lifestyle Habit Tracking
+
+**Goal:** Extend the probe pool to include ongoing lifestyle habits from a dedicated Todoist project. Habits compete equally with tasks. Claw writes a timestamped log back to the Todoist task description after every habit probe.
+
+**Status:** ✅ Complete — deployed 16 May 2026
+
+**What was built:**
+
+- `HABIT_SECTIONS` — set of Todoist section IDs that mark a task as a lifestyle habit
+- `get_lifestyle_habits()` — fetches tasks from Claw/Life Style section; these are always in scope (no temporal filtering)
+- `update_task_description()` — Todoist API write-back; appends log entries to task description
+- `is_habit: bool` field on `Task` dataclass
+- `_write_habit_log()` in `probe.py` — after every habit probe, cheap model generates a structured log line (✓/✗/—) plus optional extended note if something meaningful happened
+- `HABIT_LOG_SYSTEM` prompt — returns JSON `{"log": "...", "note": "..."}`
+- Updated `PROBE_SYSTEM` — habit-specific instructions: build vs. stop habits handled differently; early evening weighting for motivational habits; reference log history
+- Updated `TASK_SELECTION_SYSTEM` — habit-awareness; prioritise habits with ✗ streaks; weight motivational habits at 18:00
+
+**Habits currently tracked (Claw/Life Style section):**
+
+| Habit | Context |
+|---|---|
+| Strength Training | Cholesterol + arthritis barriers. Subtask: Find Resistance Bands |
+| Get on top of boozing | Reducing from ~100 units/week. 4 days sober at time of first probe |
+
+**Key decisions:**
+
+- Habits compete equally with tasks in the same probe slot — Claude picks whichever is most worth discussing
+- Always write a log line after a habit probe (even no_reply); only write an extended note if something meaningful was said
+- Log lives in Todoist task description (not just SQLite) so the history is visible and editable in Todoist itself
+- Swinburne section excluded for now
+
+**What was learned:**
+
+- Haiku immediately understood the habit/task distinction and cited "early evening is high-value timing for this type of habit check-in" on first run — the prompt framing worked
+- The running log in Todoist description (`[16 May] — Acknowledged 4 days sober, DTs avoided`) gives Claude a human-readable history without needing to query the DB for habit-specific context
 
 ---
 
@@ -92,4 +131,7 @@ Morning briefing fires, feels right. Probe picks one task, asks a real question,
 
 ## Lessons Learned
 
-*Appended as the project progresses.*
+- **Haiku + JSON**: Always strip markdown code fences before parsing. Haiku wraps JSON in ` ```json ``` ` blocks despite being told not to. Fixed in `_select_task()` and `_write_habit_log()`.
+- **UTC always**: Use `datetime.now(timezone.utc)` everywhere. Mixing naive and aware datetimes causes silent off-by-one errors in day calculations when the system timezone isn't UTC.
+- **Prompt framing works**: The TASK_SELECTION prompt's habit instructions were understood immediately on the first live run — Haiku cited the exact reasoning we encoded ("early evening is high-value timing"). Prompt quality is the primary lever for behaviour.
+- **Log in the source, not just the DB**: Writing the habit log back to Todoist description keeps the history where the habit lives. It's human-readable, editable, and Claude can see it in the task description without a separate DB query.
