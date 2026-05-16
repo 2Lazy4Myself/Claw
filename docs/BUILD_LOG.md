@@ -110,6 +110,55 @@ Probed "Strength Training" habit. User mentioned the resistance bands were ready
 
 ---
 
+## Phase 1.7 — Inbound Listener + Snooze
+
+**Goal:** Make Claw two-way. Any message you send outside a probe session gets a response. If you defer a task during a probe, Claw stops asking about it until the date you named.
+
+**Status:** ✅ Complete — 16 May 2026
+
+**What was built:**
+
+- `listener.py` — cron job (every 2 min) that processes inbound Telegram messages outside of probe sessions. Classifies intent (`briefing` | `general`) with the cheap model and routes accordingly. Exits immediately if the probe lock file exists.
+- `PROBE_LOCK_FILE` (`/tmp/claw_probe.lock`) — probe creates this at startup, removes it on exit. Listener bails if it's present, preventing both processes from consuming the same Telegram updates.
+- `listener_state` SQLite table — stores the Telegram update offset so each cron run picks up where the last left off. No message is processed twice, no message is lost between runs.
+- `get_listener_offset() / set_listener_offset()` on `MemoryStore`
+- `TelegramClient.get_updates()` — public, non-blocking fetch used by the listener
+- `LISTENER_INTENT_SYSTEM` prompt — classifies inbound messages
+- `LISTENER_GENERAL_SYSTEM` prompt — Claude responds with session context for general messages
+- Snooze detection in `probe.py`: `_detect_and_snooze()` runs post-conversation (same pattern as `_detect_and_close`). Asks cheap model for a date, writes `snoozed_until` to `TaskMemory`, sends a Telegram confirmation. The final `upsert_task_memory` uses the newly detected snooze date.
+- `SNOOZE_DETECTION_SYSTEM` prompt — returns JSON `{"snooze": bool, "date_iso": "YYYY-MM-DD"}`; today's date injected for relative-date resolution
+- `_is_snoozed()` in `probe.py` — pre-filters snoozed tasks before Claude even sees the candidate list
+- 6 new unit tests: `_is_snoozed` (3 cases), listener offset roundtrip (3 cases)
+- `docker/crontab` updated: `*/2 * * * *` listener entry added
+- `scripts/run_listener.sh` added
+
+**Key decisions:**
+
+- Listener as cron job (not a daemon) — simpler deployment, no process supervision needed, no socket/IPC required
+- Lock file for coordination — probe creates it at the top of `run_probe`, removes in `finally`. Listener checks and exits if present. This is the simplest form of mutual exclusion that works in a single-container environment.
+- Offset in SQLite (not a file) — consistent with everything else in memory; atomic writes, no race on the file system
+- Snooze detection post-conversation — full transcript available, same clean pattern as completion detection
+- `_is_snoozed()` as a pre-filter in `_run_probe_inner` — cheaper and more reliable than trusting the selection prompt alone
+
+**What was learned:**
+
+- The lock file + cron approach avoids all the complexity of shared Telegram offset management between concurrent processes. The probe simply owns polling during its window; the listener owns it the rest of the time.
+- Relative date resolution ("Thursday") requires today's date injected into the snooze prompt — Claude can't compute relative dates without knowing when "now" is.
+
+---
+
+## Tidy — Cross-module coupling cleanup
+
+**Status:** ✅ Complete — 16 May 2026
+
+**What changed:**
+
+- `_strip_json_fences` moved from `probe.py` to `prompts.strip_json_fences` (public). Its natural home is the module that handles Claude output. Both `probe.py` and `listener.py` already import `prompts`, so no new dependencies needed. A one-line alias in `probe.py` keeps all internal call sites unchanged.
+- `PROBE_LOCK_FILE` duplicated into `listener.py` as a local constant. Removed the import from `probe.py`. A path string doesn't warrant a cross-module dependency.
+- `import os` ordering fixed in `listener.py` (stdlib before local imports).
+
+---
+
 ## Phase 2 — Adaptive Timing
 
 **Goal:** Claw learns when you're receptive and adjusts when it reaches out. Fixed cron is replaced (or supplemented) by a lightweight engagement model.
@@ -163,11 +212,11 @@ Probed "Strength Training" habit. User mentioned the resistance bands were ready
 Ordered by value vs. effort. None of these are committed — just the clearest candidates.
 
 ### High value, low effort
-**1. Persistent inbound listener** — right now, replies to the briefing go nowhere. A lightweight always-on polling loop that wakes up on inbound messages would let you interact with Claw at any time, not just during a 15-minute probe window. This unlocks ad-hoc queries ("what's on today?"), snoozing a task by reply, and casual check-ins.
+**1. ✅ Persistent inbound listener** — done in Phase 1.7. Two-minute cron, handles briefing queries and general messages.
 
 **2. Briefing includes habits** — habits don't appear in the morning briefing at all. A brief mention of habit state ("Strength Training: 0 sessions logged this week") would make the briefing a fuller picture of the day.
 
-**3. Snooze by reply** — during a probe, if you say "remind me Thursday", Claw should set `snoozed_until` in memory so it stops probing that item until then. The conversation already captures this intent; it just doesn't act on it.
+**3. ✅ Snooze by reply** — done in Phase 1.7. Post-conversation detection writes `snoozed_until` to memory.
 
 ### Medium value, medium effort
 **4. Adaptive timing (Phase 2)** — track how quickly and how much you reply per session, build a per-time-of-day engagement model. If you never reply on Monday evenings, stop probing then. Needs ~2 weeks of data before it's meaningful.
@@ -177,7 +226,7 @@ Ordered by value vs. effort. None of these are committed — just the clearest c
 ### Lower priority
 **6. Sentiment tracking (Phase 4)** — score each session for emotional tone, build a rolling picture. Useful once there's enough data (weeks). Claude's tone already adapts somewhat from context; this would formalise it.
 
-**7. Webhook-based Telegram** — replace long-polling with webhooks for real-time response. Requires a public HTTPS endpoint (reverse proxy on Unraid). Not worth it until the listener exists anyway.
+**7. Webhook-based Telegram** — replace long-polling with webhooks for real-time response. Requires a public HTTPS endpoint (reverse proxy on Unraid).
 
 ---
 

@@ -50,6 +50,21 @@ class TelegramClient:
             "text": text,
         })
 
+    def get_updates(self, offset: Optional[int] = None, timeout: int = 0) -> list[dict]:
+        """
+        Fetches pending updates from Telegram. Non-blocking by default (timeout=0).
+        Used by the listener to process inbound messages without a reply window.
+        """
+        params: dict = {"timeout": timeout}
+        if offset is not None:
+            params["offset"] = offset
+        try:
+            resp = self._get("getUpdates", params)
+            return resp.get("result", [])
+        except TelegramAPIError as e:
+            logger.warning(f"get_updates failed: {e}")
+            return []
+
     def send_error(self, text: str) -> None:
         """
         Sends an error alert. Swallows its own exceptions to avoid error loops.

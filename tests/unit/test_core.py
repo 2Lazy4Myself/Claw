@@ -356,3 +356,101 @@ class TestConfigValidation:
         }
         with pytest.raises(ValueError, match="selection_model"):
             _validate(config)
+
+
+# ─── Snooze detection helpers ─────────────────────────────────────────────────
+
+class TestIsSnoozed:
+    def test_no_memory_is_not_snoozed(self):
+        import tempfile, os
+        from claw.memory import MemoryStore
+        from claw.probe import _is_snoozed
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            store = MemoryStore(db_path)
+            task = make_task(id="t1")
+            now = datetime(2026, 5, 16, 18, 0, 0, tzinfo=__import__("datetime").timezone.utc)
+            assert _is_snoozed(task, store, now) is False
+        finally:
+            os.unlink(db_path)
+
+    def test_future_snooze_is_snoozed(self):
+        import tempfile, os
+        from datetime import timezone
+        from claw.memory import MemoryStore, TaskMemory
+        from claw.probe import _is_snoozed
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            store = MemoryStore(db_path)
+            snooze_dt = datetime(2026, 5, 20, 0, 0, 0, tzinfo=timezone.utc)
+            store.upsert_task_memory(TaskMemory(
+                task_id="t1", last_probed_at=None, probe_count=0,
+                last_outcome=None, notes="", snoozed_until=snooze_dt,
+            ))
+            task = make_task(id="t1")
+            now = datetime(2026, 5, 16, 18, 0, 0, tzinfo=timezone.utc)
+            assert _is_snoozed(task, store, now) is True
+        finally:
+            os.unlink(db_path)
+
+    def test_expired_snooze_is_not_snoozed(self):
+        import tempfile, os
+        from datetime import timezone
+        from claw.memory import MemoryStore, TaskMemory
+        from claw.probe import _is_snoozed
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            store = MemoryStore(db_path)
+            snooze_dt = datetime(2026, 5, 10, 0, 0, 0, tzinfo=timezone.utc)
+            store.upsert_task_memory(TaskMemory(
+                task_id="t1", last_probed_at=None, probe_count=0,
+                last_outcome=None, notes="", snoozed_until=snooze_dt,
+            ))
+            task = make_task(id="t1")
+            now = datetime(2026, 5, 16, 18, 0, 0, tzinfo=timezone.utc)
+            assert _is_snoozed(task, store, now) is False
+        finally:
+            os.unlink(db_path)
+
+
+# ─── Listener offset persistence ──────────────────────────────────────────────
+
+class TestListenerOffset:
+    def test_returns_none_before_any_set(self):
+        import tempfile, os
+        from claw.memory import MemoryStore
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            store = MemoryStore(db_path)
+            assert store.get_listener_offset() is None
+        finally:
+            os.unlink(db_path)
+
+    def test_set_and_get_roundtrip(self):
+        import tempfile, os
+        from claw.memory import MemoryStore
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            store = MemoryStore(db_path)
+            store.set_listener_offset(12345)
+            assert store.get_listener_offset() == 12345
+        finally:
+            os.unlink(db_path)
+
+    def test_update_overwrites_previous(self):
+        import tempfile, os
+        from claw.memory import MemoryStore
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            store = MemoryStore(db_path)
+            store.set_listener_offset(100)
+            store.set_listener_offset(200)
+            assert store.get_listener_offset() == 200
+        finally:
+            os.unlink(db_path)

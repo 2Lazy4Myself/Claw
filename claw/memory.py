@@ -148,6 +148,27 @@ class MemoryStore:
 
     # ─── Internal ─────────────────────────────────────────────────────────────
 
+    def get_listener_offset(self) -> Optional[int]:
+        """Returns the last processed Telegram update_id + 1, or None if never set."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM listener_state WHERE key = 'telegram_offset'"
+            ).fetchone()
+        if row is None:
+            return None
+        return int(row["value"])
+
+    def set_listener_offset(self, offset: int) -> None:
+        """Persists the next Telegram update offset."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO listener_state (key, value) VALUES ('telegram_offset', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (str(offset),),
+            )
+
     def _init_schema(self) -> None:
         with self._get_connection() as conn:
             conn.execute("""
@@ -169,6 +190,12 @@ class MemoryStore:
                     engagement_signal INTEGER,
                     summary TEXT,
                     raw_transcript TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS listener_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
                 )
             """)
 

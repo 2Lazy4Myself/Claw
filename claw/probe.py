@@ -16,10 +16,13 @@ Flow:
 from __future__ import annotations
 import json
 import logging
+import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, date as _date, time as _time, timezone
 from typing import Optional
+
+PROBE_LOCK_FILE = "/tmp/claw_probe.lock"
 
 from claw.claude_client import ClaudeClient
 from claw.config import load_config
@@ -33,13 +36,7 @@ logger = logging.getLogger(__name__)
 MAX_PROBE_TURNS = 4
 
 
-def _strip_json_fences(raw: str) -> str:
-    """Strips markdown code fences that models sometimes wrap JSON in."""
-    stripped = raw.strip()
-    if stripped.startswith("```"):
-        lines = stripped.split("\n")
-        stripped = "\n".join(lines[1:-1]).strip()
-    return stripped
+_strip_json_fences = prompts.strip_json_fences
 
 
 def run_probe(
@@ -55,6 +52,30 @@ def run_probe(
     logger.info("Starting probe run")
     started_at = datetime.now(timezone.utc)
 
+    # Signal to the listener that the probe owns Telegram polling right now
+    try:
+        with open(PROBE_LOCK_FILE, "w") as f:
+            f.write(str(os.getpid()))
+    except OSError as e:
+        logger.warning(f"Could not create probe lock file: {e}")
+
+    try:
+        _run_probe_inner(todoist, memory, claude, telegram, config, started_at)
+    finally:
+        try:
+            os.unlink(PROBE_LOCK_FILE)
+        except FileNotFoundError:
+            pass
+
+
+def _run_probe_inner(
+    todoist: TodoistClient,
+    memory: MemoryStore,
+    claude: ClaudeClient,
+    telegram: TelegramClient,
+    config: dict,
+    started_at: datetime,
+) -> None:
     # 1. Fetch tasks from all configured projects + lifestyle habits
     all_tasks: list[Task] = []
     for project_key in config["todoist"]["projects"]:
@@ -65,15 +86,19 @@ def run_probe(
         logger.info("No tasks — skipping probe")
         return
 
-    # 2. Filter: skip tasks probed too recently
+    # 2. Filter: skip tasks probed too recently, or currently snoozed
     min_hours = config["behaviour"]["min_hours_between_same_task_probe"]
     eligible_ids = set(memory.get_tasks_not_recently_probed(
         [t.id for t in all_tasks], min_hours=min_hours
     ))
-    eligible_tasks = [t for t in all_tasks if t.id in eligible_ids]
+    now = datetime.now(timezone.utc)
+    eligible_tasks = [
+        t for t in all_tasks
+        if t.id in eligible_ids and not _is_snoozed(t, memory, now)
+    ]
 
     if not eligible_tasks:
-        logger.info("All tasks probed recently — skipping")
+        logger.info("All tasks probed recently or snoozed — skipping")
         return
 
     # 3. Select a task to probe (cheap model)
@@ -121,6 +146,11 @@ def run_probe(
     subtasks = todoist.get_subtasks(selected_task.id)
     _detect_and_close(selected_task, subtasks, conversation_history, outcome, todoist, telegram, claude, config)
 
+    # 6c. Set snooze if the user asked to defer
+    snooze_until = _detect_and_snooze(
+        selected_task, conversation_history, outcome, telegram, claude, config
+    )
+
     # 7. Log session + update task memory
     raw_transcript = json.dumps(conversation_history)
 
@@ -152,7 +182,7 @@ def run_probe(
         probe_count=existing.probe_count + 1,
         last_outcome=outcome,
         notes=(existing.notes + notes_append).strip(),
-        snoozed_until=existing.snoozed_until,
+        snoozed_until=snooze_until or existing.snoozed_until,
     ))
 
 
@@ -392,6 +422,71 @@ def _detect_and_close(
                 logger.warning(f"Failed to close subtask: {e}")
 
 
+def _detect_and_snooze(
+    task: Task,
+    history: list[dict],
+    outcome: str,
+    telegram: TelegramClient,
+    claude: ClaudeClient,
+    config: dict,
+) -> Optional[datetime]:
+    """
+    After a probe, detects if the user asked to defer this task.
+    Returns the snooze datetime if set, None otherwise.
+    Sends a confirmation message via Telegram when a snooze is applied.
+    """
+    if outcome == "no_reply":
+        return None
+
+    today = _date.today().isoformat()
+    raw = claude.complete(
+        system=prompts.get_prompt("SNOOZE_DETECTION_SYSTEM"),
+        user=(
+            f"Today's date: {today}\n"
+            f"Task: {task.content}\n\n"
+            f"Conversation:\n{json.dumps(history)}"
+        ),
+        max_tokens=80,
+        model=config["claude"]["selection_model"],
+    )
+    try:
+        detection = json.loads(_strip_json_fences(raw))
+    except json.JSONDecodeError:
+        logger.warning(f"Snooze detection returned non-JSON: {raw!r}")
+        return None
+
+    if not detection.get("snooze"):
+        return None
+
+    date_iso = detection.get("date_iso")
+    if not date_iso:
+        return None
+
+    try:
+        snooze_dt = datetime.combine(
+            _date.fromisoformat(date_iso), _time.min, tzinfo=timezone.utc
+        )
+    except (ValueError, TypeError):
+        logger.warning(f"Snooze detection returned invalid date: {date_iso!r}")
+        return None
+
+    snooze_display = snooze_dt.strftime("%-d %b")
+    telegram.send_message(f"Got it — I'll leave this one until {snooze_display}.")
+    logger.info(f"Snoozed task {task.id} until {date_iso}")
+    return snooze_dt
+
+
+def _is_snoozed(task: Task, memory: MemoryStore, now: datetime) -> bool:
+    """Returns True if this task has an active snooze that hasn't expired."""
+    task_mem = memory.get_task_memory(task.id)
+    if task_mem is None or task_mem.snoozed_until is None:
+        return False
+    snooze_dt = task_mem.snoozed_until
+    if snooze_dt.tzinfo is None:
+        snooze_dt = snooze_dt.replace(tzinfo=timezone.utc)
+    return snooze_dt > now
+
+
 def _find_subtask(name: str, subtasks: list[Task]) -> Optional[Task]:
     """
     Finds a subtask by name. Case-insensitive exact match first, partial match fallback.
@@ -419,7 +514,6 @@ def _write_habit_log(
     Appends a timestamped log entry to the Todoist task description after a habit probe.
     Always writes a one-liner; adds an extended note only when something meaningful happened.
     """
-    from datetime import date as _date
     raw = claude.complete(
         system=prompts.get_prompt("HABIT_LOG_SYSTEM"),
         user=f"Habit: {task.content}\nOutcome: {outcome}\n\n{json.dumps(history)}",
