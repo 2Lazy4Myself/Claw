@@ -9,7 +9,7 @@ telegram:
   allowed_user_id: 123456789
 
   # Timeout in seconds for the listener to wait for a reply during a probe session.
-  reply_timeout_seconds: 300
+  reply_timeout_seconds: 900
 
   # If set, errors and system alerts go to this chat ID (can be same as above).
   error_chat_id: 123456789
