@@ -33,6 +33,15 @@ logger = logging.getLogger(__name__)
 MAX_PROBE_TURNS = 4
 
 
+def _strip_json_fences(raw: str) -> str:
+    """Strips markdown code fences that models sometimes wrap JSON in."""
+    stripped = raw.strip()
+    if stripped.startswith("```"):
+        lines = stripped.split("\n")
+        stripped = "\n".join(lines[1:-1]).strip()
+    return stripped
+
+
 def run_probe(
     todoist: TodoistClient,
     memory: MemoryStore,
@@ -58,12 +67,10 @@ def run_probe(
 
     # 2. Filter: skip tasks probed too recently
     min_hours = config["behaviour"]["min_hours_between_same_task_probe"]
-    eligible_ids = memory.get_tasks_not_recently_probed(
+    eligible_ids = set(memory.get_tasks_not_recently_probed(
         [t.id for t in all_tasks], min_hours=min_hours
-    )
-    # Also include tasks with no memory record (never probed)
-    eligible_tasks = [t for t in all_tasks if t.id in eligible_ids or
-                      memory.get_task_memory(t.id) is None]
+    ))
+    eligible_tasks = [t for t in all_tasks if t.id in eligible_ids]
 
     if not eligible_tasks:
         logger.info("All tasks probed recently — skipping")
@@ -173,14 +180,8 @@ def _select_task(
         model=config["claude"]["selection_model"],
     )
 
-    # Strip markdown code fences if the model wrapped the JSON
-    stripped = raw.strip()
-    if stripped.startswith("```"):
-        lines = stripped.split("\n")
-        stripped = "\n".join(lines[1:-1]).strip()
-
     try:
-        parsed = json.loads(stripped)
+        parsed = json.loads(_strip_json_fences(raw))
     except json.JSONDecodeError:
         logger.warning(f"Task selection returned non-JSON: {raw!r}")
         return None
@@ -260,11 +261,7 @@ def _summarise_session(
     """
     try:
         return claude.complete(
-            system=(
-                "Summarise this probe conversation in 1-2 sentences. "
-                "Focus on what was said, the outcome, and any commitment made. "
-                "Be factual and brief. No fluff."
-            ),
+            system=prompts.get_prompt("SESSION_SUMMARY_SYSTEM"),
             user=f"Task: {task.content}\nOutcome: {outcome}\n\nTranscript:\n{transcript}",
             max_tokens=100,
             model=config["claude"]["selection_model"],
@@ -368,11 +365,8 @@ def _detect_and_close(
         max_tokens=80,
         model=config["claude"]["selection_model"],
     )
-    stripped = raw.strip()
-    if stripped.startswith("```"):
-        stripped = "\n".join(stripped.split("\n")[1:-1]).strip()
     try:
-        detection = json.loads(stripped)
+        detection = json.loads(_strip_json_fences(raw))
     except json.JSONDecodeError:
         logger.warning(f"Completion detection returned non-JSON: {raw!r}")
         return
@@ -432,11 +426,8 @@ def _write_habit_log(
         max_tokens=120,
         model=config["claude"]["selection_model"],
     )
-    stripped = raw.strip()
-    if stripped.startswith("```"):
-        stripped = "\n".join(stripped.split("\n")[1:-1]).strip()
     try:
-        parsed = json.loads(stripped)
+        parsed = json.loads(_strip_json_fences(raw))
     except json.JSONDecodeError:
         logger.warning(f"Habit log returned non-JSON: {raw!r}")
         return

@@ -160,6 +160,14 @@ Continue the conversation.
 """
 
 
+# ─── Session summarisation ───────────────────────────────────────────────────
+
+SESSION_SUMMARY_SYSTEM = """
+Summarise this probe conversation in 1-2 sentences.
+Focus on what was said, the outcome, and any commitment made.
+Be factual and brief. No fluff.
+"""
+
 # ─── Completion detection ────────────────────────────────────────────────────
 
 COMPLETION_DETECTION_SYSTEM = """
