@@ -1,0 +1,23 @@
+# Secrets and local config
+.env
+config/config.yaml
+config/prompts.yaml
+
+# Data
+data/
+logs/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Editors
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "claw"
+version = "0.1.0"
+description = "Emotionally intelligent personal assistant"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.25.0",
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+claw-briefing = "claw.briefing:main"
+claw-probe = "claw.probe:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests as integration tests (require live credentials)",
+]
+# Run unit tests by default; integration tests require: pytest -m integration
+addopts = "-m 'not integration'"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["claw*"]
