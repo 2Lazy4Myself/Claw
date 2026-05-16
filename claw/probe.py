@@ -110,6 +110,10 @@ def run_probe(
     if selected_task.is_habit:
         _write_habit_log(selected_task, conversation_history, outcome, todoist, claude, config)
 
+    # 6b. Close task/subtask in Todoist if user indicated completion
+    subtasks = todoist.get_subtasks(selected_task.id)
+    _detect_and_close(selected_task, subtasks, conversation_history, outcome, todoist, telegram, claude, config)
+
     # 7. Log session + update task memory
     raw_transcript = json.dumps(conversation_history)
 
@@ -333,6 +337,80 @@ def _format_task_for_selection(task: Task, task_memory: Optional[TaskMemory]) ->
         f"- task_id: {task.id},{habit_tag} [{task.section_name}] {task.content} "
         f"({task.project_name}){overdue}{memory_str}{snoozed}"
     )
+
+
+def _detect_and_close(
+    task: Task,
+    subtasks: list[Task],
+    history: list[dict],
+    outcome: str,
+    todoist: TodoistClient,
+    telegram: TelegramClient,
+    claude: ClaudeClient,
+    config: dict,
+) -> None:
+    """
+    After a probe conversation, asks Claude whether the user indicated completion.
+    If so, closes the task or subtask in Todoist and sends a confirmation to Telegram.
+    """
+    if outcome == "no_reply":
+        return
+
+    subtask_names = [s.content for s in subtasks]
+    raw = claude.complete(
+        system=prompts.get_prompt("COMPLETION_DETECTION_SYSTEM"),
+        user=(
+            f"Task: {task.content}\n"
+            f"Is habit: {task.is_habit}\n"
+            f"Known subtasks: {subtask_names if subtask_names else 'none'}\n\n"
+            f"Conversation:\n{json.dumps(history)}"
+        ),
+        max_tokens=80,
+        model=config["claude"]["selection_model"],
+    )
+    stripped = raw.strip()
+    if stripped.startswith("```"):
+        stripped = "\n".join(stripped.split("\n")[1:-1]).strip()
+    try:
+        detection = json.loads(stripped)
+    except json.JSONDecodeError:
+        logger.warning(f"Completion detection returned non-JSON: {raw!r}")
+        return
+
+    action = detection.get("action", "none")
+
+    if action == "close_task" and not task.is_habit:
+        try:
+            todoist.close_task(task.id)
+            telegram.send_message("✓ Checked off in Todoist.")
+            logger.info(f"Closed task {task.id} in Todoist")
+        except Exception as e:
+            logger.warning(f"Failed to close task: {e}")
+
+    elif action == "close_subtask":
+        subtask = _find_subtask(detection.get("subtask_name", ""), subtasks)
+        if subtask:
+            try:
+                todoist.close_task(subtask.id)
+                telegram.send_message(f"✓ Checked off '{subtask.content}' in Todoist.")
+                logger.info(f"Closed subtask {subtask.id} ({subtask.content})")
+            except Exception as e:
+                logger.warning(f"Failed to close subtask: {e}")
+
+
+def _find_subtask(name: str, subtasks: list[Task]) -> Optional[Task]:
+    """
+    Finds a subtask by name. Case-insensitive exact match first, partial match fallback.
+    Pure function — used by _detect_and_close and testable independently.
+    """
+    name_lower = name.strip().lower()
+    for s in subtasks:
+        if s.content.strip().lower() == name_lower:
+            return s
+    for s in subtasks:
+        if name_lower in s.content.strip().lower():
+            return s
+    return None
 
 
 def _write_habit_log(

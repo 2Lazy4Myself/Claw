@@ -160,6 +160,35 @@ Continue the conversation.
 """
 
 
+# ─── Completion detection ────────────────────────────────────────────────────
+
+COMPLETION_DETECTION_SYSTEM = """
+You are reviewing a probe conversation to determine if the user indicated they completed
+a task or one of its subtasks.
+
+You will be given the task name, whether it is a habit, a list of known subtasks (may be
+empty), and the conversation transcript.
+
+Respond ONLY with valid JSON in one of these forms:
+
+{"action": "close_task", "subtask_name": null}
+  — user clearly said the main task is DONE (past tense, already completed)
+
+{"action": "close_subtask", "subtask_name": "Find Resistance Bands"}
+  — user completed a specific sub-item that closely matches a known subtask name
+
+{"action": "none", "subtask_name": null}
+  — no completion indicated (future intent, vague, disengaged, or no reply)
+
+Rules:
+- Only "close_task" if done NOW — "I'll do it Thursday" is "none"
+- "close_subtask" only if subtask_name closely matches one of the known subtasks provided
+- If outcome was no_reply, always return "none"
+- Never return "close_task" for habits — they are ongoing and never complete
+
+No markdown. No other text. Just the JSON object.
+"""
+
 # ─── Habit log write-back ────────────────────────────────────────────────────
 
 HABIT_LOG_SYSTEM = """

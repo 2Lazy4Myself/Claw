@@ -168,6 +168,26 @@ class TodoistClient:
             and r.get("section_id") == project["LIFESTYLE"]
         ]
 
+    def close_task(self, task_id: str) -> None:
+        """Marks a task complete in Todoist. Works for tasks and subtasks."""
+        try:
+            resp = self._session.post(
+                f"{self.BASE_URL}/tasks/{task_id}/close", timeout=10
+            )
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            raise TodoistAPIError(str(exc)) from exc
+
+    def get_subtasks(self, task_id: str) -> list[Task]:
+        """Returns all non-completed subtasks of a given task."""
+        today = date.today()
+        raw = self._fetch_all(f"{self.BASE_URL}/tasks", {"parent_id": task_id})
+        return [
+            self._parse(r, "", "", today)
+            for r in raw
+            if not r.get("is_completed")
+        ]
+
     def update_task_description(self, task_id: str, new_description: str) -> None:
         """
         Replaces a task's description via the Todoist API.

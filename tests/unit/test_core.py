@@ -258,6 +258,44 @@ class TestFormatTaskForSelection:
         assert "SNOOZED" in result
 
 
+class TestFindSubtask:
+    def _make_subtasks(self):
+        return [
+            make_task(id="sub-1", content="Find Resistance Bands"),
+            make_task(id="sub-2", content="Book physio appointment"),
+        ]
+
+    def test_exact_match(self):
+        from claw.probe import _find_subtask
+        subtasks = self._make_subtasks()
+        result = _find_subtask("Find Resistance Bands", subtasks)
+        assert result is not None
+        assert result.id == "sub-1"
+
+    def test_case_insensitive_match(self):
+        from claw.probe import _find_subtask
+        subtasks = self._make_subtasks()
+        result = _find_subtask("find resistance bands", subtasks)
+        assert result is not None
+        assert result.id == "sub-1"
+
+    def test_partial_match_fallback(self):
+        from claw.probe import _find_subtask
+        subtasks = self._make_subtasks()
+        result = _find_subtask("resistance bands", subtasks)
+        assert result is not None
+        assert result.id == "sub-1"
+
+    def test_no_match_returns_none(self):
+        from claw.probe import _find_subtask
+        subtasks = self._make_subtasks()
+        assert _find_subtask("something completely different", subtasks) is None
+
+    def test_empty_list_returns_none(self):
+        from claw.probe import _find_subtask
+        assert _find_subtask("Find Resistance Bands", []) is None
+
+
 class TestIsConversationClosed:
     def test_short_no_question_is_closed(self):
         from claw.probe import _is_conversation_closed
