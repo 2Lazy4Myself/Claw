@@ -50,7 +50,6 @@ def run_probe(
     Runs one complete probe cycle. All dependencies injected for testability.
     """
     logger.info("Starting probe run")
-    started_at = datetime.now(timezone.utc)
 
     # Signal to the listener that the probe owns Telegram polling right now
     try:
@@ -60,7 +59,7 @@ def run_probe(
         logger.warning(f"Could not create probe lock file: {e}")
 
     try:
-        _run_probe_inner(todoist, memory, claude, telegram, config, started_at)
+        _run_probe_inner(todoist, memory, claude, telegram, config)
     finally:
         try:
             os.unlink(PROBE_LOCK_FILE)
@@ -74,7 +73,6 @@ def _run_probe_inner(
     claude: ClaudeClient,
     telegram: TelegramClient,
     config: dict,
-    started_at: datetime,
 ) -> None:
     # 1. Fetch tasks from all configured projects + lifestyle habits + waiting-for
     all_tasks: list[Task] = []

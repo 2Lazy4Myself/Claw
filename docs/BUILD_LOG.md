@@ -181,6 +181,57 @@ Probed "Strength Training" habit. User mentioned the resistance bands were ready
 
 ---
 
+## Phase 1.9 — Constant Cleaning + Waiting For + On-Demand Probe
+
+**Goal:** Make Claw more fluid. Rather than one nudge per session, keep going while the user is engaged. Surface "Waiting For" tasks that were invisible to Claw. Let the user trigger a probe at any time, not just at 08:00 and 18:00.
+
+**Status:** ✅ Complete — 16 May 2026
+
+**What was built:**
+
+**Session chaining (Constant Cleaning):**
+- `_run_probe_inner` became a loop (up to `max_chain_length`, default 5)
+- `_probe_one_task()` extracted — handles one task end-to-end and returns outcome
+- Loop exits immediately on `no_reply`; continues to next topic on `closed` or `max_turns_reached`
+- `discussed_ids` set grows each iteration; already-covered tasks excluded from selection
+- `last_discussed` task passed to `_select_task()` as `previous_topic` — selection prompt weights thematically related next items higher
+- `chain_context` injected into `PROBE_USER_TEMPLATE` when `chain_index > 0` — Claude opens the next topic naturally without recapping
+
+**Waiting For tracking:**
+- `WAITING_SECTIONS` set added to `todoist_client.py` (derived from PROJECTS dict, covers work + home)
+- `Task.is_waiting: bool` field; set in `_parse()` when section_id is in WAITING_SECTIONS
+- Waiting tasks fetched via `get_waiting_for()` and added to the probe pool
+- Separate staleness threshold: `waiting_for_min_probe_hours` (default 72h vs 48h for regular tasks)
+- Tagged `[WAITING]` in selection and `Type: WAITING FOR` in probe — prompts use "did this come through?" framing
+- Morning briefing includes waiting count + oldest overdue item
+- `_detect_and_close()` already handles close on "got it" — no changes needed
+
+**On-demand probe:**
+- `LISTENER_INTENT_SYSTEM` gains `"probe"` intent
+- `_handle_probe()` in `listener.py` calls `run_probe()` directly
+- Lock file coordination unchanged — probe acquires lock, other listener runs bail
+
+**Refactor (post-build tidy):**
+- `started_at` removed from `_run_probe_inner` signature (each `_probe_one_task` computes its own)
+- `LISTENER_INTENT_SYSTEM` JSON schema updated to `"briefing" | "probe" | "general"`
+
+**Config additions:**
+```yaml
+behaviour:
+  max_chain_length: 5
+  waiting_for_min_probe_hours: 72
+```
+
+**Tests:** 10 new unit tests (56 total): `TestIsWaiting` (6), `TestFormatWaitingForPrompt` (4)
+
+**Key decisions:**
+- `all_tasks` fetched once before the chaining loop — no re-fetching between topics; task availability is stable within a session
+- Waiting tasks use a separate (longer) staleness threshold, computed before the loop via a second `get_tasks_not_recently_probed()` call
+- On-demand probe via listener (not a midday cron) — user controls when, variable timing without Phase 2's engagement model
+- Proactive Claw-initiated probes at arbitrary hours deferred to Phase 2
+
+---
+
 ## Phase 2 — Adaptive Timing
 
 **Goal:** Claw learns when you're receptive and adjusts when it reaches out. Fixed cron is replaced (or supplemented) by a lightweight engagement model.
@@ -233,22 +284,23 @@ Probed "Strength Training" habit. User mentioned the resistance bands were ready
 
 Ordered by value vs. effort. None of these are committed — just the clearest candidates.
 
-### High value, low effort
-**1. ✅ Persistent inbound listener** — done in Phase 1.7. Two-minute cron, handles briefing queries and general messages.
+### High value, low effort — all done
+**1. ✅ Persistent inbound listener** — Phase 1.7
+**2. ✅ Briefing includes habits** — Phase 1.8
+**3. ✅ Snooze by reply** — Phase 1.7
+**4. ✅ Constant Cleaning (session chaining)** — Phase 1.9
+**5. ✅ Waiting For tracking** — Phase 1.9
+**6. ✅ On-demand probe** — Phase 1.9
 
-**2. ✅ Briefing includes habits** — done in Phase 1.8. Last log line per habit injected into briefing prompt. Claude weaves in a mention of struggling or unlogged habits.
+### Next: Phase 2 — Adaptive Timing
+Track response latency and engagement per time slot. Needs ~2 weeks of real usage data before the model is meaningful. Until then, Phase 1.9's on-demand probe covers variable timing.
 
-**3. ✅ Snooze by reply** — done in Phase 1.7. Post-conversation detection writes `snoozed_until` to memory.
-
-### Medium value, medium effort
-**4. Adaptive timing (Phase 2)** — track how quickly and how much you reply per session, build a per-time-of-day engagement model. If you never reply on Monday evenings, stop probing then. Needs ~2 weeks of data before it's meaningful.
-
-**5. Goal layer (Phase 3)** — link tasks to longer-term goals via Todoist labels. Claw notices when a goal has gone silent and surfaces it. Adds a layer of meaning above the task list.
+### Phase 3 — Goal layer
+Link tasks to longer-term goals via Todoist labels. Claw notices when a goal has gone silent.
 
 ### Lower priority
-**6. Sentiment tracking (Phase 4)** — score each session for emotional tone, build a rolling picture. Useful once there's enough data (weeks). Claude's tone already adapts somewhat from context; this would formalise it.
-
-**7. Webhook-based Telegram** — replace long-polling with webhooks for real-time response. Requires a public HTTPS endpoint (reverse proxy on Unraid).
+- **Sentiment tracking (Phase 4)** — score each session for emotional tone, build a rolling picture
+- **Webhook-based Telegram** — requires a public HTTPS endpoint (reverse proxy on Unraid)
 
 ---
 

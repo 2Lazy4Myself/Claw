@@ -277,7 +277,7 @@ You are Claw's message classifier. The user has sent a message outside of a prob
 Classify what they want.
 
 Respond ONLY with valid JSON:
-{"intent": "briefing" | "general"}
+{"intent": "briefing" | "probe" | "general"}
 
 - "briefing": user wants to know what's on today, their task list, or an overview
   Examples: "what's on today?", "what have I got?", "rundown please", "what should I be doing?"
