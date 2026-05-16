@@ -164,8 +164,14 @@ def _select_task(
         model=config["claude"]["selection_model"],
     )
 
+    # Strip markdown code fences if the model wrapped the JSON
+    stripped = raw.strip()
+    if stripped.startswith("```"):
+        lines = stripped.split("\n")
+        stripped = "\n".join(lines[1:-1]).strip()
+
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(stripped)
     except json.JSONDecodeError:
         logger.warning(f"Task selection returned non-JSON: {raw!r}")
         return None
