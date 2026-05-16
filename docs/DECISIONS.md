@@ -90,18 +90,40 @@ The prompt is part of the logic of the system. It belongs in the codebase, reada
 
 ---
 
-## ADR-005: No Shared Bot with openclaw / PM Engine
+## ADR-005: Shared Bot Token with Parent Project
 
-**Date:** Pre-Phase 1 (architectural prerequisite)  
+**Date:** Pre-Phase 1 (revised May 2026)  
 **Status:** Accepted
 
 **Context:**  
-An existing Telegram bot is shared between openclaw and a PM engine. Adding Claw to the same bot would create three systems sharing one update stream, with no clear ownership of messages.
+Claw is the child of the `todoist-telegram` project running on Unraid. Both systems share the same Telegram bot token (`8289598272:…`) and the same Todoist API token. OpenClaw also shares this bot token for its scheduled coach jobs.
 
-**Decision:** Claw gets its own dedicated bot token, created via BotFather.
+**Decision:** Claw uses the shared bot token, not a dedicated one.
 
 **Rationale:**  
-Shared bot tokens create fragile state — any system consuming `getUpdates` advances the offset, meaning other systems may miss messages. Each system having its own token means clean, independent update streams with no polling conflicts. This also makes it obvious to the user which system they're talking to.
+Claw is designed to replace and extend `todoist-telegram` — it is not a separate concern. Using the same bot preserves continuity for the user. Polling conflicts are avoided by the fact that only one system actively polls at a time (Claw's probe listener runs within a bounded window, not continuously).
 
 **Consequences:**  
-User manages three bot tokens. Acceptable — they are independent concerns. Bot names should be clearly distinct.
+Claw and `todoist-telegram` must not run simultaneously in listener mode. During Claw's probe session window, `todoist-telegram` is not polling. This is acceptable for the single-user, cron-driven architecture.
+
+---
+
+## ADR-006: Sections as the Temporal Signal in Todoist
+
+**Date:** May 2026  
+**Status:** Accepted
+
+**Context:**  
+Jake's Todoist does not rely on native due dates as the primary way of expressing when a task should be done. Instead, sections within each project act as temporal buckets: Today / Next 2-3 Days / This Week / Next Week / This Month. Moving a task into a section IS the planning gesture.
+
+**Decision:** `todoist_client.py` treats `section_name` as the primary time signal. `due_date` is secondary.
+
+**Rationale:**  
+This mirrors the established approach in the parent `todoist-telegram` project, which has been running successfully on Unraid. Forcing due-date-based logic onto a section-based workflow would produce incorrect results — tasks without a due_date are not undated, they're just dated by section. The briefing and probe logic must be aware of this: a task in "Next 2-3 Days" with no due_date is a near-term task, not an ambiguous one.
+
+`due_date` is still used for two specific purposes:
+1. Flagging overdue items (due_date < today) with visual emphasis
+2. Including tasks from non-Today sections in the Today nag if their due_date has passed
+
+**Consequences:**  
+When Claude reasons about task urgency, prompts must include `section_name` as a key field. The `todoist_client.py` hardcodes the section IDs for Work and Home projects — these are stable and project-specific. If the Todoist structure ever changes, only `todoist_client.py` needs updating.

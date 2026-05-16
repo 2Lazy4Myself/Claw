@@ -15,19 +15,18 @@ telegram:
   error_chat_id: 123456789
 
 # ─── Todoist ─────────────────────────────────────────────────────────────────
+# Claw uses sections — not due dates — as the primary time signal.
+# Moving a task to a section (Today / Next 2-3 Days / This Week etc.) IS the
+# planning gesture. Section IDs are hardcoded in todoist_client.py.
+# See docs/DECISIONS.md ADR-006.
 todoist:
-  # Which project IDs to include in briefings and probes.
-  # Leave empty to include all projects.
-  # Find project IDs via Todoist API or browser URL.
-  include_project_ids: []
-
-  # Tasks with these label names will be excluded from probing (but may appear in briefing).
-  exclude_labels:
-    - waiting
-    - someday
+  # Which project keys to include in briefings and probes.
+  # Valid values: "work", "home". Both are enabled by default.
+  projects:
+    - work
+    - home
 
   # Tasks overdue by fewer than this many days will not be probed.
-  # Avoids probing things that are only slightly late.
   min_overdue_days_to_probe: 2
 
 # ─── Memory ──────────────────────────────────────────────────────────────────
