@@ -81,6 +81,35 @@ This document is the living record of what was built, when, why, and what was le
 
 ---
 
+## Phase 1.6 — Todoist Write-Back: Task and Subtask Closing
+
+**Goal:** When a user confirms task completion during a probe, Claw closes it in Todoist automatically and sends a Telegram confirmation. No more manual ticking.
+
+**Status:** ✅ Complete — 16 May 2026
+
+**What was built:**
+
+- `close_task(task_id)` on `TodoistClient` — `POST /tasks/{id}/close` (204 No Content)
+- `get_subtasks(task_id)` on `TodoistClient` — fetches active subtasks by `parent_id`
+- `COMPLETION_DETECTION_SYSTEM` prompt — cheap model reads the conversation and returns JSON: `{"action": "close_task|close_subtask|none", "subtask_name": "..."}`
+- `_detect_and_close()` in `probe.py` — runs after every non-`no_reply` probe; guards habits from being closed (they're ongoing); sends `✓ Checked off in Todoist.` or `✓ Checked off 'subtask name' in Todoist.`
+- `_find_subtask()` — pure function, case-insensitive exact then partial name match; 5 unit tests
+
+**Live test result (first run):**
+
+Probed "Strength Training" habit. User mentioned the resistance bands were ready. Result:
+- Habit log appended: `[16 May] ✓ planned resistance band exercises — Starting with chair/standing/floor exercises; bands already sourced`
+- Subtask "Find Resistance Bands" automatically closed in Todoist
+- Telegram confirmation sent: `✓ Checked off 'Find Resistance Bands' in Todoist.`
+
+**Key decisions:**
+
+- Detection runs post-conversation (not inside the loop) — cleaner, full transcript available
+- Habits are explicitly guarded: `close_task` never fires if `is_habit=True`; subtask closing still works for habits
+- Subtask name matching is fuzzy (exact first, partial fallback) — avoids brittleness when Claude paraphrases the subtask name
+
+---
+
 ## Phase 2 — Adaptive Timing
 
 **Goal:** Claw learns when you're receptive and adjusts when it reaches out. Fixed cron is replaced (or supplemented) by a lightweight engagement model.
@@ -129,9 +158,34 @@ This document is the living record of what was built, when, why, and what was le
 
 ---
 
+## Next Steps
+
+Ordered by value vs. effort. None of these are committed — just the clearest candidates.
+
+### High value, low effort
+**1. Persistent inbound listener** — right now, replies to the briefing go nowhere. A lightweight always-on polling loop that wakes up on inbound messages would let you interact with Claw at any time, not just during a 15-minute probe window. This unlocks ad-hoc queries ("what's on today?"), snoozing a task by reply, and casual check-ins.
+
+**2. Briefing includes habits** — habits don't appear in the morning briefing at all. A brief mention of habit state ("Strength Training: 0 sessions logged this week") would make the briefing a fuller picture of the day.
+
+**3. Snooze by reply** — during a probe, if you say "remind me Thursday", Claw should set `snoozed_until` in memory so it stops probing that item until then. The conversation already captures this intent; it just doesn't act on it.
+
+### Medium value, medium effort
+**4. Adaptive timing (Phase 2)** — track how quickly and how much you reply per session, build a per-time-of-day engagement model. If you never reply on Monday evenings, stop probing then. Needs ~2 weeks of data before it's meaningful.
+
+**5. Goal layer (Phase 3)** — link tasks to longer-term goals via Todoist labels. Claw notices when a goal has gone silent and surfaces it. Adds a layer of meaning above the task list.
+
+### Lower priority
+**6. Sentiment tracking (Phase 4)** — score each session for emotional tone, build a rolling picture. Useful once there's enough data (weeks). Claude's tone already adapts somewhat from context; this would formalise it.
+
+**7. Webhook-based Telegram** — replace long-polling with webhooks for real-time response. Requires a public HTTPS endpoint (reverse proxy on Unraid). Not worth it until the listener exists anyway.
+
+---
+
 ## Lessons Learned
 
-- **Haiku + JSON**: Always strip markdown code fences before parsing. Haiku wraps JSON in ` ```json ``` ` blocks despite being told not to. Fixed in `_select_task()` and `_write_habit_log()`.
+- **Haiku + JSON**: Always strip markdown code fences before parsing. Haiku wraps JSON in ` ```json ``` ` blocks despite being told not to. Fixed in `_select_task()`, `_write_habit_log()`, and `_detect_and_close()`.
 - **UTC always**: Use `datetime.now(timezone.utc)` everywhere. Mixing naive and aware datetimes causes silent off-by-one errors in day calculations when the system timezone isn't UTC.
 - **Prompt framing works**: The TASK_SELECTION prompt's habit instructions were understood immediately on the first live run — Haiku cited the exact reasoning we encoded ("early evening is high-value timing"). Prompt quality is the primary lever for behaviour.
-- **Log in the source, not just the DB**: Writing the habit log back to Todoist description keeps the history where the habit lives. It's human-readable, editable, and Claude can see it in the task description without a separate DB query.
+- **Log in the source, not just the DB**: Writing the habit log back to Todoist description keeps the history where the habit lives. It's human-readable, editable, and Claude can see it without a separate DB query.
+- **Post-conversation detection is cleaner than in-loop**: Detecting completion intent after the conversation ends (full transcript available) is simpler and more reliable than trying to detect it turn-by-turn during the loop.
+- **Fuzzy subtask matching beats exact**: Claude paraphrases subtask names when reporting completion. Partial match fallback catches "got the bands" → "Find Resistance Bands" without needing the model to be precise.
