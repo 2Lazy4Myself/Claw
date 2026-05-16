@@ -159,6 +159,28 @@ Probed "Strength Training" habit. User mentioned the resistance bands were ready
 
 ---
 
+## Phase 1.8 — Habits in Morning Briefing
+
+**Goal:** Habits appear in the morning briefing so the daily picture is complete, not just tasks.
+
+**Status:** ✅ Complete — 16 May 2026
+
+**What was built:**
+
+- `get_lifestyle_habits()` called in `run_briefing` alongside task fetching
+- `_format_habits_for_prompt()` — formats each habit as `- Name: <last log line>` (or `no log yet` if description is empty)
+- `_last_log_line()` — extracts the last non-empty line from a habit's Todoist description, which holds the running probe log
+- `BRIEFING_USER_TEMPLATE` gains a `Lifestyle habits:` block between tasks and memory context
+- `BRIEFING_SYSTEM` gains one instruction: weave in a brief mention of struggling or unlogged habits — don't list them all
+
+**Key decisions:**
+
+- Last log line is the right signal: it's the most recent state, already human-readable, no extra DB query
+- Claude decides whether/how to mention it — the instruction says "one is enough", not "list all"
+- No new API calls, no schema changes — purely additive to the briefing prompt
+
+---
+
 ## Phase 2 — Adaptive Timing
 
 **Goal:** Claw learns when you're receptive and adjusts when it reaches out. Fixed cron is replaced (or supplemented) by a lightweight engagement model.
@@ -214,7 +236,7 @@ Ordered by value vs. effort. None of these are committed — just the clearest c
 ### High value, low effort
 **1. ✅ Persistent inbound listener** — done in Phase 1.7. Two-minute cron, handles briefing queries and general messages.
 
-**2. Briefing includes habits** — habits don't appear in the morning briefing at all. A brief mention of habit state ("Strength Training: 0 sessions logged this week") would make the briefing a fuller picture of the day.
+**2. ✅ Briefing includes habits** — done in Phase 1.8. Last log line per habit injected into briefing prompt. Claude weaves in a mention of struggling or unlogged habits.
 
 **3. ✅ Snooze by reply** — done in Phase 1.7. Post-conversation detection writes `snoozed_until` to memory.
 
