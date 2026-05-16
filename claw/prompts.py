@@ -32,6 +32,7 @@ Rules you must follow:
 - End with one light, open thought or question — not a call to action.
 - Do not use bullet points. Write like a person, not a project manager.
 - If lifestyle habits are provided, weave in one brief mention — especially if a habit shows ✗ or has no log yet. Don't list them all. One is enough.
+- If there are waiting-for items, mention them briefly if any have been sitting a while. One line max.
 - Be concise. This is a morning message, not a report.
 - Tone: warm, direct. A little dry is fine. Never robotic.
 """
@@ -42,6 +43,9 @@ Today's tasks from Todoist:
 
 Lifestyle habits:
 {habit_summary}
+
+Waiting on others:
+{waiting_summary}
 
 Memory context:
 {memory_context}
@@ -62,16 +66,21 @@ For regular tasks, choose based on:
 - Tasks where memory suggests something interesting is going on
 - Do NOT choose tasks snoozed until a future date
 
-For lifestyle habits, choose based on:
+For lifestyle habits [HABIT], choose based on:
 - Habits not recently checked in on (they never complete, so recency matters most)
 - If the habit description log shows a ✗ streak, prioritise it
 - If the habit has a motivational dimension (e.g. trying to stop drinking), early evening
   is high-value timing — weight it accordingly
 - If the log shows consistent ✓ progress, deprioritise in favour of struggling habits or tasks
 
+For waiting-for items [WAITING], choose based on:
+- Only select if it has been sitting a while without a check-in
+- The question to ask is "did this come through?" — not what's blocking it
+
 General rules:
 - Do NOT probe the same item two days in a row
-- ONE selection only — task or habit, whichever is most worth discussing tonight
+- ONE selection only — task, habit, or waiting item, whichever is most worth discussing now
+- If 'Previous topic' is provided, weight thematically related items higher (e.g. after an exercise task, a fitness habit is a natural next pick)
 
 Respond ONLY with valid JSON in this exact format:
 {"task_id": "abc123", "reason": "overdue 5 days, last discussed 8 days ago, user said they'd do it last week"}
@@ -85,6 +94,8 @@ No other text. No markdown. Just the JSON object.
 TASK_SELECTION_USER_TEMPLATE = """
 Tasks:
 {task_list_with_memory}
+
+Previous topic: {previous_topic}
 
 Select one task to probe, or return null if nothing warrants it.
 """
@@ -118,6 +129,11 @@ If the item is a LIFESTYLE HABIT (you will be told explicitly):
 - If the log history shows repeated ✗, name the pattern honestly but without shame.
   "This one keeps not happening — what's actually in the way?"
 - Offer a genuine out if they're not in the headspace: "Want to leave this one for now?"
+
+If the item is marked WAITING FOR:
+- You're not asking about progress on their end. You're asking if the thing they were
+  waiting on has arrived. "Did X come through?" One question. If it has, it can be closed.
+  If still waiting, find out if they need to follow up with anyone.
 """
 
 PROBE_USER_TEMPLATE = """
@@ -130,6 +146,7 @@ Memory for this task:
 Recent engagement context:
 {engagement_context}
 
+{chain_context}
 Open a probe conversation about this task.
 """
 
@@ -264,6 +281,8 @@ Respond ONLY with valid JSON:
 
 - "briefing": user wants to know what's on today, their task list, or an overview
   Examples: "what's on today?", "what have I got?", "rundown please", "what should I be doing?"
+- "probe": user wants a check-in now, wants to be probed, wants to know what to work on
+  Examples: "probe me", "check in with me", "what should I work on?", "let's clean up", "quick check in"
 - "general": anything else — questions, comments, check-ins, venting
 
 No markdown. No other text. Just the JSON object.

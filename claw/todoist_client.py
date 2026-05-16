@@ -53,6 +53,13 @@ HABIT_SECTIONS: set[str] = {
     "6gfjQXwJfGRVvJGG",  # Claw / Life Style
 }
 
+# Section IDs that mark a task as "Waiting For" (delegated, blocked on others).
+WAITING_SECTIONS: set[str] = {
+    project["WAITING"]
+    for project in PROJECTS.values()
+    if "WAITING" in project
+}
+
 SECTION_DISPLAY: dict[str, str] = {
     "TODAY":       "Today",
     "NEXT_FEW":    "Next 2-3 Days",
@@ -91,6 +98,7 @@ class Task:
     is_overdue: bool    # due_date is in the past
     days_overdue: int   # 0 if not overdue
     is_habit: bool      # True if this is a lifestyle habit (Life Style section)
+    is_waiting: bool    # True if this is in a Waiting For section
 
     @property
     def display_name(self) -> str:
@@ -273,6 +281,7 @@ class TodoistClient:
             is_overdue=is_overdue,
             days_overdue=days_overdue,
             is_habit=section_id in HABIT_SECTIONS,
+            is_waiting=section_id in WAITING_SECTIONS,
         )
 
 

@@ -53,6 +53,11 @@ def run_briefing(
     habits = todoist.get_lifestyle_habits()
     logger.info(f"Fetched {len(habits)} lifestyle habits")
 
+    waiting_tasks: list[Task] = []
+    for project_key in config["todoist"]["projects"]:
+        waiting_tasks.extend(todoist.get_waiting_for(project_key))
+    logger.info(f"Fetched {len(waiting_tasks)} waiting-for tasks")
+
     if not all_tasks:
         logger.info("No tasks today — sending all-clear")
         telegram.send_message("Nothing on the board today. Enjoy the space.")
@@ -67,6 +72,7 @@ def run_briefing(
     # 3. Build task list string for prompt
     task_list = _format_tasks_for_prompt(all_tasks, config["behaviour"]["briefing_max_tasks"])
     habit_summary = _format_habits_for_prompt(habits)
+    waiting_summary = _format_waiting_for_prompt(waiting_tasks)
 
     # 4. Ask Claude for the briefing
     briefing_text = claude.complete(
@@ -74,6 +80,7 @@ def run_briefing(
         user=prompts.BRIEFING_USER_TEMPLATE.format(
             task_list=task_list,
             habit_summary=habit_summary,
+            waiting_summary=waiting_summary,
             memory_context=memory_context,
         ),
         max_tokens=config["claude"]["briefing_max_tokens"],
@@ -126,6 +133,19 @@ def _format_habits_for_prompt(habits: list[Task]) -> str:
 def _last_log_line(description: str) -> str:
     lines = [l.strip() for l in description.splitlines() if l.strip()]
     return lines[-1] if lines else "no log yet"
+
+
+def _format_waiting_for_prompt(tasks: list[Task]) -> str:
+    if not tasks:
+        return "Nothing waiting on others."
+    count = len(tasks)
+    oldest = max(tasks, key=lambda t: t.days_overdue)
+    oldest_note = ""
+    if oldest.days_overdue > 0:
+        oldest_note = f" (oldest: '{oldest.content}', {oldest.days_overdue}d overdue)"
+    elif count == 1:
+        oldest_note = f": '{oldest.content}'"
+    return f"{count} item{'s' if count > 1 else ''} waiting on others{oldest_note}."
 
 
 def main() -> None:

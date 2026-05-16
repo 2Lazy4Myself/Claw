@@ -90,8 +90,25 @@ def _handle_message(
 
     if intent == "briefing":
         _handle_briefing(todoist, memory, claude, telegram, config)
+    elif intent == "probe":
+        _handle_probe(todoist, memory, claude, telegram, config)
     else:
         _handle_general(text, memory, claude, telegram, config)
+
+
+def _handle_probe(
+    todoist: TodoistClient,
+    memory: MemoryStore,
+    claude: ClaudeClient,
+    telegram: TelegramClient,
+    config: dict,
+) -> None:
+    from claw.probe import run_probe
+    try:
+        run_probe(todoist, memory, claude, telegram, config)
+    except Exception as e:
+        logger.error(f"On-demand probe failed: {e}", exc_info=True)
+        telegram.send_error(f"Probe failed: {e}")
 
 
 def _handle_briefing(

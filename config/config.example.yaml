@@ -79,3 +79,11 @@ behaviour:
 
   # Minimum hours between probing the same task again.
   min_hours_between_same_task_probe: 48
+
+  # Minimum hours between checking in on the same "Waiting For" task.
+  # These change slowly — 3 days is a reasonable default.
+  waiting_for_min_probe_hours: 72
+
+  # Maximum number of tasks to probe in a single Constant Cleaning session.
+  # Session ends early if the user stops responding.
+  max_chain_length: 5

@@ -28,6 +28,7 @@ def make_task(
     days_overdue=0,
     priority=1,
     is_habit=False,
+    is_waiting=False,
 ) -> Task:
     return Task(
         id=id,
@@ -43,6 +44,7 @@ def make_task(
         is_overdue=days_overdue > 0,
         days_overdue=days_overdue,
         is_habit=is_habit,
+        is_waiting=is_waiting,
     )
 
 
@@ -454,3 +456,74 @@ class TestListenerOffset:
             assert store.get_listener_offset() == 200
         finally:
             os.unlink(db_path)
+
+
+# ─── Waiting For field ───────────────────────────────────────────────────────
+
+class TestIsWaiting:
+    def test_waiting_task_flagged(self):
+        from claw.todoist_client import WAITING_SECTIONS
+        section_id = next(iter(WAITING_SECTIONS))
+        task = make_task(section_id=section_id, is_waiting=True)
+        assert task.is_waiting is True
+
+    def test_regular_task_not_waiting(self):
+        task = make_task(section_id="sec-today", is_waiting=False)
+        assert task.is_waiting is False
+
+    def test_waiting_sections_set_is_nonempty(self):
+        from claw.todoist_client import WAITING_SECTIONS
+        assert len(WAITING_SECTIONS) >= 2  # work and home
+
+    def test_waiting_tag_in_selection_format(self):
+        from claw.probe import _format_task_for_selection
+        task = make_task(is_waiting=True, content="Invoice from supplier")
+        result = _format_task_for_selection(task, None)
+        assert "[WAITING]" in result
+
+    def test_waiting_type_in_prompt_format(self):
+        from claw.probe import _format_task_for_prompt
+        task = make_task(is_waiting=True, content="Invoice from supplier")
+        result = _format_task_for_prompt(task)
+        assert "WAITING FOR" in result
+
+    def test_habit_tag_not_waiting_tag(self):
+        from claw.probe import _format_task_for_selection
+        task = make_task(is_habit=True, is_waiting=False, content="Strength Training")
+        result = _format_task_for_selection(task, None)
+        assert "[HABIT]" in result
+        assert "[WAITING]" not in result
+
+
+# ─── Waiting For briefing formatter ──────────────────────────────────────────
+
+class TestFormatWaitingForPrompt:
+    def test_empty_returns_nothing_waiting(self):
+        from claw.briefing import _format_waiting_for_prompt
+        assert "Nothing waiting" in _format_waiting_for_prompt([])
+
+    def test_single_item_shows_name(self):
+        from claw.briefing import _format_waiting_for_prompt
+        task = make_task(content="Invoice from supplier", is_waiting=True)
+        result = _format_waiting_for_prompt([task])
+        assert "Invoice from supplier" in result
+        assert "1 item" in result
+
+    def test_multiple_items_shows_count(self):
+        from claw.briefing import _format_waiting_for_prompt
+        tasks = [
+            make_task(id="w1", content="A", is_waiting=True, days_overdue=5),
+            make_task(id="w2", content="B", is_waiting=True, days_overdue=2),
+        ]
+        result = _format_waiting_for_prompt(tasks)
+        assert "2 items" in result
+
+    def test_oldest_shown_when_overdue(self):
+        from claw.briefing import _format_waiting_for_prompt
+        tasks = [
+            make_task(id="w1", content="OldOne", is_waiting=True, days_overdue=10),
+            make_task(id="w2", content="NewOne", is_waiting=True, days_overdue=1),
+        ]
+        result = _format_waiting_for_prompt(tasks)
+        assert "OldOne" in result
+        assert "10d" in result

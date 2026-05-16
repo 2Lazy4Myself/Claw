@@ -76,50 +76,103 @@ def _run_probe_inner(
     config: dict,
     started_at: datetime,
 ) -> None:
-    # 1. Fetch tasks from all configured projects + lifestyle habits
+    # 1. Fetch tasks from all configured projects + lifestyle habits + waiting-for
     all_tasks: list[Task] = []
     for project_key in config["todoist"]["projects"]:
         all_tasks.extend(todoist.get_today_and_overdue(project_key))
     all_tasks.extend(todoist.get_lifestyle_habits())
+    for project_key in config["todoist"]["projects"]:
+        all_tasks.extend(todoist.get_waiting_for(project_key))
 
     if not all_tasks:
         logger.info("No tasks — skipping probe")
         return
 
     # 2. Filter: skip tasks probed too recently, or currently snoozed
+    # Waiting tasks use a longer staleness threshold (default 72h vs 48h for regular tasks)
     min_hours = config["behaviour"]["min_hours_between_same_task_probe"]
-    eligible_ids = set(memory.get_tasks_not_recently_probed(
-        [t.id for t in all_tasks], min_hours=min_hours
-    ))
+    waiting_min_hours = config["behaviour"].get("waiting_for_min_probe_hours", 72)
+
+    regular_ids = [t.id for t in all_tasks if not t.is_waiting]
+    waiting_ids = [t.id for t in all_tasks if t.is_waiting]
+
+    eligible_regular = set(memory.get_tasks_not_recently_probed(regular_ids, min_hours=min_hours))
+    eligible_waiting = set(memory.get_tasks_not_recently_probed(waiting_ids, min_hours=waiting_min_hours))
+    eligible_ids = eligible_regular | eligible_waiting
+
     now = datetime.now(timezone.utc)
-    eligible_tasks = [
+    base_eligible = [
         t for t in all_tasks
         if t.id in eligible_ids and not _is_snoozed(t, memory, now)
     ]
 
-    if not eligible_tasks:
+    if not base_eligible:
         logger.info("All tasks probed recently or snoozed — skipping")
         return
 
-    # 3. Select a task to probe (cheap model)
-    selected_task = _select_task(eligible_tasks, memory, claude, config)
-    if selected_task is None:
-        logger.info("Claude selected no task to probe")
-        if not config["behaviour"]["skip_probe_if_nothing_to_probe"]:
-            telegram.send_message("Nothing particular on my mind today. You're on top of it.")
-        return
+    # 3. Constant Cleaning loop — probe tasks until no engagement or cap hit
+    max_chain = config["behaviour"].get("max_chain_length", 5)
+    discussed_ids: set[str] = set()
+    last_discussed: Optional[Task] = None
 
-    logger.info(f"Probing task: {selected_task.display_name}")
+    for chain_index in range(max_chain):
+        eligible_tasks = [t for t in base_eligible if t.id not in discussed_ids]
+        if not eligible_tasks:
+            logger.info("No more eligible tasks for this session")
+            break
 
-    # 4. Open the probe conversation (Sonnet)
-    task_memory = memory.get_task_memory(selected_task.id)
+        selected_task = _select_task(eligible_tasks, memory, claude, config, last_discussed=last_discussed)
+        if selected_task is None:
+            logger.info("Claude selected no task to probe")
+            if chain_index == 0 and not config["behaviour"]["skip_probe_if_nothing_to_probe"]:
+                telegram.send_message("Nothing particular on my mind today. You're on top of it.")
+            break
+
+        logger.info(f"Probing task [{chain_index + 1}/{max_chain}]: {selected_task.display_name}")
+        outcome = _probe_one_task(
+            selected_task, todoist, memory, claude, telegram, config,
+            chain_index=chain_index, last_discussed=last_discussed,
+        )
+
+        discussed_ids.add(selected_task.id)
+        last_discussed = selected_task
+
+        if outcome == "no_reply":
+            logger.info("No reply — ending session")
+            break
+
+
+def _probe_one_task(
+    task: Task,
+    todoist: TodoistClient,
+    memory: MemoryStore,
+    claude: ClaudeClient,
+    telegram: TelegramClient,
+    config: dict,
+    chain_index: int,
+    last_discussed: Optional[Task],
+) -> str:
+    """
+    Runs one complete probe conversation for a single task.
+    Returns the outcome: "no_reply" | "closed" | "max_turns_reached"
+    """
+    started_at = datetime.now(timezone.utc)
+    task_memory = memory.get_task_memory(task.id)
     recent_sessions = memory.get_recent_sessions(n=3)
     engagement_context = build_context_block(None, recent_sessions)
 
+    chain_context = ""
+    if chain_index > 0 and last_discussed is not None:
+        chain_context = (
+            f"You've already discussed '{last_discussed.content}' tonight. "
+            "Move to this next — no recap, just open naturally."
+        )
+
     opening_user_msg = prompts.PROBE_USER_TEMPLATE.format(
-        task=_format_task_for_prompt(selected_task),
+        task=_format_task_for_prompt(task),
         task_memory=_format_task_memory(task_memory),
         engagement_context=engagement_context,
+        chain_context=chain_context,
     )
     opening = claude.complete(
         system=prompts.get_prompt("PROBE_SYSTEM"),
@@ -128,47 +181,35 @@ def _run_probe_inner(
     )
     telegram.send_message(opening)
 
-    # 5. Conversation loop
     conversation_history = [
         {"role": "user", "content": opening_user_msg},
         {"role": "assistant", "content": opening},
     ]
-    outcome = _run_conversation_loop(
-        selected_task, conversation_history, memory, claude, telegram, config
-    )
+    outcome = _run_conversation_loop(task, conversation_history, memory, claude, telegram, config)
     logger.info(f"Probe outcome: {outcome}")
 
-    # 6. Write habit log back to Todoist description (habits only)
-    if selected_task.is_habit:
-        _write_habit_log(selected_task, conversation_history, outcome, todoist, claude, config)
+    if task.is_habit:
+        _write_habit_log(task, conversation_history, outcome, todoist, claude, config)
 
-    # 6b. Close task/subtask in Todoist if user indicated completion
-    subtasks = todoist.get_subtasks(selected_task.id)
-    _detect_and_close(selected_task, subtasks, conversation_history, outcome, todoist, telegram, claude, config)
+    subtasks = todoist.get_subtasks(task.id)
+    _detect_and_close(task, subtasks, conversation_history, outcome, todoist, telegram, claude, config)
+    snooze_until = _detect_and_snooze(task, conversation_history, outcome, telegram, claude, config)
 
-    # 6c. Set snooze if the user asked to defer
-    snooze_until = _detect_and_snooze(
-        selected_task, conversation_history, outcome, telegram, claude, config
-    )
-
-    # 7. Log session + update task memory
     raw_transcript = json.dumps(conversation_history)
-
-    # Summarise with cheap model
-    summary = _summarise_session(raw_transcript, selected_task, outcome, claude, config)
+    summary = _summarise_session(raw_transcript, task, outcome, claude, config)
 
     memory.log_session(SessionRecord(
         session_id=str(uuid.uuid4()),
         session_type="probe",
         started_at=started_at,
-        task_id=selected_task.id,
+        task_id=task.id,
         engagement_signal=None,
         summary=summary,
         raw_transcript=raw_transcript,
     ))
 
     existing = task_memory or TaskMemory(
-        task_id=selected_task.id,
+        task_id=task.id,
         last_probed_at=None,
         probe_count=0,
         last_outcome=None,
@@ -177,13 +218,15 @@ def _run_probe_inner(
     )
     notes_append = f"\n[{datetime.now(timezone.utc).date()}] {summary}" if summary else ""
     memory.upsert_task_memory(TaskMemory(
-        task_id=selected_task.id,
+        task_id=task.id,
         last_probed_at=datetime.now(timezone.utc),
         probe_count=existing.probe_count + 1,
         last_outcome=outcome,
         notes=(existing.notes + notes_append).strip(),
         snoozed_until=snooze_until or existing.snoozed_until,
     ))
+
+    return outcome
 
 
 # ─── Task selection ───────────────────────────────────────────────────────────
@@ -193,6 +236,7 @@ def _select_task(
     memory: MemoryStore,
     claude: ClaudeClient,
     config: dict,
+    last_discussed: Optional[Task] = None,
 ) -> Optional[Task]:
     """
     Asks Claude (cheap model) to pick one task to probe. Returns the Task or None.
@@ -201,10 +245,12 @@ def _select_task(
         _format_task_for_selection(t, memory.get_task_memory(t.id))
         for t in tasks
     )
+    previous_topic = last_discussed.content if last_discussed else ""
     raw = claude.complete(
         system=prompts.get_prompt("TASK_SELECTION_SYSTEM"),
         user=prompts.TASK_SELECTION_USER_TEMPLATE.format(
-            task_list_with_memory=task_list_with_memory
+            task_list_with_memory=task_list_with_memory,
+            previous_topic=previous_topic,
         ),
         max_tokens=config["claude"]["selection_max_tokens"],
         model=config["claude"]["selection_model"],
@@ -308,6 +354,8 @@ def _format_task_for_prompt(task: Task) -> str:
     lines = []
     if task.is_habit:
         lines.append("Type: LIFESTYLE HABIT")
+    elif task.is_waiting:
+        lines.append("Type: WAITING FOR")
     lines += [
         f"Content: {task.content}",
         f"Section: {task.section_name}",
@@ -347,7 +395,7 @@ def _format_task_for_selection(task: Task, task_memory: Optional[TaskMemory]) ->
     Compact one-liner for the task selection prompt.
     Claude needs just enough to make a good choice.
     """
-    habit_tag = " [HABIT]" if task.is_habit else ""
+    habit_tag = " [HABIT]" if task.is_habit else (" [WAITING]" if task.is_waiting else "")
     overdue = f", overdue {task.days_overdue}d" if task.is_overdue else ""
     from claw.memory import _days_ago
     if task_memory and task_memory.last_probed_at:
