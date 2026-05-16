@@ -156,6 +156,103 @@ class TestFormatTasksForPrompt:
         assert result.count("Task") == 3
 
 
+# ─── Probe format functions ──────────────────────────────────────────────────
+
+class TestFormatTaskForPrompt:
+    def test_includes_content_and_section(self):
+        from claw.probe import _format_task_for_prompt
+        task = make_task(content="Fix the thing", section_name="Next 2-3 Days")
+        result = _format_task_for_prompt(task)
+        assert "Fix the thing" in result
+        assert "Next 2-3 Days" in result
+
+    def test_overdue_badge_shown(self):
+        from claw.probe import _format_task_for_prompt
+        task = make_task(days_overdue=5)
+        result = _format_task_for_prompt(task)
+        assert "5 day" in result
+        assert "Overdue" in result
+
+    def test_no_overdue_line_when_not_overdue(self):
+        from claw.probe import _format_task_for_prompt
+        task = make_task(days_overdue=0)
+        result = _format_task_for_prompt(task)
+        assert "Overdue" not in result
+
+    def test_description_included_when_present(self):
+        from claw.probe import _format_task_for_prompt
+        task = make_task(description="Waiting on Bob")
+        result = _format_task_for_prompt(task)
+        assert "Waiting on Bob" in result
+
+
+class TestFormatTaskMemory:
+    def test_none_returns_no_history_message(self):
+        from claw.probe import _format_task_memory
+        result = _format_task_memory(None)
+        assert "no previous" in result.lower()
+
+    def test_populated_memory_includes_outcome(self):
+        from claw.probe import _format_task_memory
+        from claw.memory import TaskMemory
+        from datetime import timezone
+        mem = TaskMemory(
+            task_id="t1",
+            last_probed_at=datetime.now(timezone.utc) - timedelta(days=3),
+            probe_count=2,
+            last_outcome="user_committed",
+            notes="Said they'd do it Thursday.",
+            snoozed_until=None,
+        )
+        result = _format_task_memory(mem)
+        assert "user_committed" in result
+        assert "3 day" in result
+
+
+class TestFormatTaskForSelection:
+    def test_includes_task_id_and_content(self):
+        from claw.probe import _format_task_for_selection
+        task = make_task(id="abc123", content="Write report")
+        result = _format_task_for_selection(task, None)
+        assert "abc123" in result
+        assert "Write report" in result
+
+    def test_never_probed_when_no_memory(self):
+        from claw.probe import _format_task_for_selection
+        task = make_task()
+        result = _format_task_for_selection(task, None)
+        assert "never probed" in result
+
+    def test_snoozed_flagged(self):
+        from claw.probe import _format_task_for_selection
+        from claw.memory import TaskMemory
+        mem = TaskMemory(
+            task_id="t1",
+            last_probed_at=None,
+            probe_count=0,
+            last_outcome=None,
+            notes="",
+            snoozed_until=datetime(2026, 12, 31),
+        )
+        result = _format_task_for_selection(make_task(), mem)
+        assert "SNOOZED" in result
+
+
+class TestIsConversationClosed:
+    def test_short_no_question_is_closed(self):
+        from claw.probe import _is_conversation_closed
+        assert _is_conversation_closed("Sounds good. Talk soon.") is True
+
+    def test_question_is_not_closed(self):
+        from claw.probe import _is_conversation_closed
+        assert _is_conversation_closed("What's blocking you?") is False
+
+    def test_long_response_not_closed(self):
+        from claw.probe import _is_conversation_closed
+        long = "word " * 70
+        assert _is_conversation_closed(long) is False
+
+
 # ─── Config validation ────────────────────────────────────────────────────────
 
 class TestConfigValidation:
