@@ -232,23 +232,58 @@ behaviour:
 
 ---
 
-## Phase 2 — Adaptive Timing
+## Phase 2 — Adaptive Cadence + Goal-First Psychology
 
-**Goal:** Claw learns when you're receptive and adjusts when it reaches out. Fixed cron is replaced (or supplemented) by a lightweight engagement model.
+**Goal:** Replace fixed twice-daily cron with a flexible orchestrator that checks in whenever there's something worth saying — up to once every 90 minutes during the active window. Also make goals the motivating spine of every conversation, not appended metadata.
 
-**Status:** 🔲 Not started — do not design in detail until Phase 1 is stable
+**Status:** ✅ Complete — 19 May 2026
 
-**Rough scope:**
-- Track response latency per session (how quickly you reply)
-- Track response length (one-word replies = low engagement)
-- Store engagement signal per time-of-day slot
-- Let Claude factor engagement signal into whether to probe at a given time
-- Introduce a "quiet mode" that Claw can detect and respect
+**Part A — Orchestrator (cadence):**
 
-**Open questions:**
-- Does adaptive timing mean changing *when* the cron fires, or filtering at runtime?
-- How many data points before the model is meaningful?
-- What's the override mechanism if you want to force a briefing?
+The two fixed cron entries (08:00 briefing, 18:00 probe) are replaced by a single `*/30 * * * *` job that runs `claw.orchestrator`. On each tick, the orchestrator decides: brief, probe, or stay silent.
+
+Decision logic:
+1. Outside active window (07:00–21:00 London)? → exit silently
+2. Within morning window (07:00–10:00) AND no briefing logged today? → `run_briefing()`
+3. Less than 90 minutes since last session? → exit silently
+4. Otherwise → `run_probe()`
+
+New files and changes:
+- `claw/orchestrator.py` — orchestration logic; pure decision functions `_within_active_window`, `_briefing_window_open`, `_briefing_sent_today`, `_minutes_since_last_session`
+- `claw/memory.py` — two new query methods: `get_last_session_at()`, `get_last_briefing_date()`
+- `docker/crontab` — replaced two entries with single `*/30 * * * *` orchestrator entry
+- `config/config.yaml` — replaced `briefing_time`/`probe_time` with `active_window_start`, `active_window_end`, `briefing_window_end`, `min_minutes_between_sessions`
+- `claw/config.py` — schedule keys added to required validation list
+- `tests/unit/test_orchestrator.py` — 16 new unit tests for decision functions
+
+**Part B — Goal-first psychology (prompts):**
+
+Goals were present as data but not as the motivating spine of conversations. The probe opened with the task; the briefing listed tasks and mentioned goals as an afterthought; task selection treated goals as a tiebreaker.
+
+Changes — all in `claw/prompts.py`:
+- `BRIEFING_SYSTEM` — restructured: lead with the most active goal and the single task that advances it today. Secondary tasks get one collective line. QUIET goals surface prominently, not as afterthought.
+- `BRIEFING_USER_TEMPLATE` — `{goal_context}` moved to top of template so Claude reads goals before tasks.
+- `PROBE_SYSTEM` — goal is now the opening frame, not optional context: "You're working toward X. This task is your current path there." Gap framing (current → target) is a primary instruction, not a buried rule.
+- `PROBE_USER_TEMPLATE` — `{goal_line}` moved before task details so Claude reads WHY before WHAT.
+- `TASK_SELECTION_SYSTEM` — goal weighting changed from tiebreaker to active preference: "Explicitly prefer goal-linked tasks. Only fall back to non-goal tasks if none are eligible."
+- `PROBE_FOLLOWUP_SYSTEM` — added: acknowledge concrete goal progress in follow-ups when genuine.
+
+**Config additions:**
+```yaml
+schedule:
+  timezone: "Europe/London"
+  active_window_start: "07:00"
+  active_window_end: "21:00"
+  briefing_window_end: "10:00"
+  min_minutes_between_sessions: 90
+```
+
+**Tests:** 16 new unit tests in `test_orchestrator.py` (89 total)
+
+**Key decisions:**
+- No engagement model yet — cooldown + window rules are sufficient for now; actual adaptive timing (response latency, time-slot learning) can come later when there's 2+ weeks of usage data
+- `zoneinfo` (stdlib Python 3.9+) used instead of `pytz` — no new dependency
+- Goal-first framing is entirely in prompts — no code changes to goals.py, probe.py, or briefing.py; the data pipeline was already correct
 
 ---
 
@@ -339,8 +374,7 @@ Ordered by value vs. effort. None of these are committed — just the clearest c
 **5. ✅ Waiting For tracking** — Phase 1.9
 **6. ✅ On-demand probe** — Phase 1.9
 
-### Next: Phase 2 — Adaptive Timing
-Track response latency and engagement per time slot. Needs ~2 weeks of real usage data before the model is meaningful. Until then, Phase 1.9's on-demand probe covers variable timing.
+### ✅ Phase 2 — Adaptive Cadence + Goal-First Psychology — complete 19 May 2026
 
 ### ✅ Phase 3 — Goal layer — complete 19 May 2026
 

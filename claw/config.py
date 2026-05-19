@@ -61,6 +61,11 @@ def _validate(config: dict) -> None:
         ("memory", "db_path"),
         ("claude", "model"),
         ("claude", "selection_model"),
+        ("schedule", "timezone"),
+        ("schedule", "active_window_start"),
+        ("schedule", "active_window_end"),
+        ("schedule", "briefing_window_end"),
+        ("schedule", "min_minutes_between_sessions"),
     ]
     for key_path in required:
         node = config

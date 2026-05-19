@@ -1,3 +1,2 @@
-0 8 * * * cd /app && python3 -m claw.briefing >> /logs/briefing.log 2>&1
-0 18 * * * cd /app && python3 -m claw.probe >> /logs/probe.log 2>&1
+*/30 * * * * cd /app && python3 -m claw.orchestrator >> /logs/orchestrator.log 2>&1
 */2 * * * * cd /app && python3 -m claw.listener >> /logs/listener.log 2>&1

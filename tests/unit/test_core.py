@@ -323,6 +323,13 @@ class TestConfigValidation:
             "todoist": {"projects": ["work", "home"]},
             "memory": {"db_path": "data/claw.db"},
             "claude": {"model": "claude-sonnet-4-20250514", "selection_model": "claude-haiku-4-5-20251001"},
+            "schedule": {
+                "timezone": "Europe/London",
+                "active_window_start": "07:00",
+                "active_window_end": "21:00",
+                "briefing_window_end": "10:00",
+                "min_minutes_between_sessions": 90,
+            },
         }
         _validate(config)  # Should not raise
 

@@ -62,11 +62,11 @@ claude:
 
 # ─── Scheduling ──────────────────────────────────────────────────────────────
 schedule:
-  # These are informational only — actual scheduling is done via cron.
-  # See scripts/run_briefing.sh and scripts/run_probe.sh.
-  briefing_time: "08:00"
-  probe_time: "18:00"
   timezone: "Europe/London"
+  active_window_start: "07:00"      # earliest Claw will speak
+  active_window_end: "21:00"        # latest Claw will speak
+  briefing_window_end: "10:00"      # briefing only fires before this time
+  min_minutes_between_sessions: 90  # cooldown between any two sessions
 
 # ─── Behaviour ───────────────────────────────────────────────────────────────
 behaviour:

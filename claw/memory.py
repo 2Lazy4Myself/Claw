@@ -131,6 +131,35 @@ class MemoryStore:
             ).fetchall()
         return {row["task_id"]: self._row_to_task_memory(row) for row in rows}
 
+    def get_last_session_at(self) -> Optional[datetime]:
+        """Returns started_at of the most recent session (any type), UTC-aware."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT started_at FROM sessions ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        dt = _str_to_dt(row["started_at"])
+        if dt is not None and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+
+    def get_last_briefing_date(self) -> Optional[str]:
+        """Returns the date (YYYY-MM-DD UTC) of the most recent briefing session, or None."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT started_at FROM sessions WHERE session_type = 'briefing' "
+                "ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        dt = _str_to_dt(row["started_at"])
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.date().isoformat()
+
     def get_tasks_not_recently_probed(
         self, task_ids: list[str], min_hours: int = 48
     ) -> list[str]:
