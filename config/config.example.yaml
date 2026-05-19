@@ -87,3 +87,20 @@ behaviour:
   # Maximum number of tasks to probe in a single Constant Cleaning session.
   # Session ends early if the user stops responding.
   max_chain_length: 5
+
+# ─── Goals ───────────────────────────────────────────────────────────────────
+# Optional. Define longer-term goals and map them to Todoist label names.
+# Claw will notice when a goal has gone quiet and surface it in briefings and
+# probe selection. Remove this section entirely to disable the goal layer.
+#
+# labels: one or more Todoist label names. A task is assigned to a goal if any
+#         of its labels match. First matching goal wins.
+# description: one-line summary shown to Claude for context during probes.
+#
+# goals:
+#   - name: "Project Alpha"
+#     labels: ["alpha"]
+#     description: "Launch the new client portal by Q3"
+#   - name: "Health & Fitness"
+#     labels: ["fitness", "health"]
+#     description: "Build consistent exercise and nutrition habits"

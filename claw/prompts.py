@@ -33,6 +33,7 @@ Rules you must follow:
 - Do not use bullet points. Write like a person, not a project manager.
 - If lifestyle habits are provided, weave in one brief mention — especially if a habit shows ✗ or has no log yet. Don't list them all. One is enough.
 - If there are waiting-for items, mention them briefly if any have been sitting a while. One line max.
+- If goal context shows a goal marked QUIET (7+ days with no activity), weave in one brief mention — "you haven't touched [goal] in a while." One line max, not a lecture.
 - Be concise. This is a morning message, not a report.
 - Tone: warm, direct. A little dry is fine. Never robotic.
 """
@@ -46,6 +47,9 @@ Lifestyle habits:
 
 Waiting on others:
 {waiting_summary}
+
+Goals:
+{goal_context}
 
 Memory context:
 {memory_context}
@@ -77,6 +81,11 @@ For waiting-for items [WAITING], choose based on:
 - Only select if it has been sitting a while without a check-in
 - The question to ask is "did this come through?" — not what's blocking it
 
+Goal context rules:
+- Goal context will show which goals are QUIET (7+ days with no activity)
+- When task quality is otherwise similar, prefer tasks belonging to a QUIET goal
+- Do not override a clearly better pick just to serve a goal — it's a tiebreaker, not a mandate
+
 General rules:
 - Do NOT probe the same item two days in a row
 - ONE selection only — task, habit, or waiting item, whichever is most worth discussing now
@@ -94,6 +103,9 @@ No other text. No markdown. Just the JSON object.
 TASK_SELECTION_USER_TEMPLATE = """
 Tasks:
 {task_list_with_memory}
+
+Goal context:
+{goal_context}
 
 Previous topic: {previous_topic}
 
@@ -116,6 +128,8 @@ General rules:
 - Keep it short. This is a nudge, not an interrogation.
 - Tone: warm, direct, a bit dry. Like a friend who noticed something, not a system checking a flag.
 - Do not start with "Hey" or "Hi" or any greeting. Just get to it.
+- If a goal is provided, you may reference it briefly and naturally if it adds useful framing —
+  but don't make the goal the centrepiece. The task is what matters right now.
 
 If the item is a LIFESTYLE HABIT (you will be told explicitly):
 - This is not a one-off task. Do not ask "what's blocking it."
@@ -140,6 +154,7 @@ PROBE_USER_TEMPLATE = """
 Task to probe:
 {task}
 
+{goal_line}
 Memory for this task:
 {task_memory}
 

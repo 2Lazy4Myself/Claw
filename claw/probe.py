@@ -26,6 +26,7 @@ PROBE_LOCK_FILE = "/tmp/claw_probe.lock"
 
 from claw.claude_client import ClaudeClient
 from claw.config import load_config
+from claw.goals import load_goals, build_goal_summary, goal_line_for_task, Goal
 from claw.memory import MemoryStore, TaskMemory, SessionRecord, build_context_block
 from claw.telegram_client import TelegramClient
 from claw.todoist_client import TodoistClient, Task, from_env as todoist_from_env
@@ -109,6 +110,9 @@ def _run_probe_inner(
         return
 
     # 3. Constant Cleaning loop — probe tasks until no engagement or cap hit
+    goals = load_goals(config)
+    goal_context = build_goal_summary(all_tasks, goals, memory)
+
     max_chain = config["behaviour"].get("max_chain_length", 5)
     discussed_ids: set[str] = set()
     last_discussed: Optional[Task] = None
@@ -119,7 +123,10 @@ def _run_probe_inner(
             logger.info("No more eligible tasks for this session")
             break
 
-        selected_task = _select_task(eligible_tasks, memory, claude, config, last_discussed=last_discussed)
+        selected_task = _select_task(
+            eligible_tasks, memory, claude, config,
+            last_discussed=last_discussed, goal_context=goal_context,
+        )
         if selected_task is None:
             logger.info("Claude selected no task to probe")
             if chain_index == 0 and not config["behaviour"]["skip_probe_if_nothing_to_probe"]:
@@ -129,7 +136,7 @@ def _run_probe_inner(
         logger.info(f"Probing task [{chain_index + 1}/{max_chain}]: {selected_task.display_name}")
         outcome = _probe_one_task(
             selected_task, todoist, memory, claude, telegram, config,
-            chain_index=chain_index, last_discussed=last_discussed,
+            chain_index=chain_index, last_discussed=last_discussed, goals=goals,
         )
 
         discussed_ids.add(selected_task.id)
@@ -149,6 +156,7 @@ def _probe_one_task(
     config: dict,
     chain_index: int,
     last_discussed: Optional[Task],
+    goals: Optional[list[Goal]] = None,
 ) -> str:
     """
     Runs one complete probe conversation for a single task.
@@ -166,8 +174,12 @@ def _probe_one_task(
             "Move to this next — no recap, just open naturally."
         )
 
+    g_line = goal_line_for_task(task, goals or [])
+    goal_line = f"{g_line}\n" if g_line else ""
+
     opening_user_msg = prompts.PROBE_USER_TEMPLATE.format(
         task=_format_task_for_prompt(task),
+        goal_line=goal_line,
         task_memory=_format_task_memory(task_memory),
         engagement_context=engagement_context,
         chain_context=chain_context,
@@ -235,6 +247,7 @@ def _select_task(
     claude: ClaudeClient,
     config: dict,
     last_discussed: Optional[Task] = None,
+    goal_context: str = "",
 ) -> Optional[Task]:
     """
     Asks Claude (cheap model) to pick one task to probe. Returns the Task or None.
@@ -248,6 +261,7 @@ def _select_task(
         system=prompts.get_prompt("TASK_SELECTION_SYSTEM"),
         user=prompts.TASK_SELECTION_USER_TEMPLATE.format(
             task_list_with_memory=task_list_with_memory,
+            goal_context=goal_context or "No goals configured.",
             previous_topic=previous_topic,
         ),
         max_tokens=config["claude"]["selection_max_tokens"],

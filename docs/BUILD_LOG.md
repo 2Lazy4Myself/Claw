@@ -256,13 +256,34 @@ behaviour:
 
 **Goal:** Tasks are linked to longer-term goals. Claw can notice when you're making progress on a goal vs. drifting from it, and can contextualise task conversations accordingly.
 
-**Status:** 🔲 Not started
+**Status:** ✅ Complete — 19 May 2026
 
-**Rough scope:**
-- Goal definition format (stored in config or vault)
-- Task → Goal mapping (tag-based via Todoist labels, or explicit in config)
-- Claude gains goal context when choosing what to probe
-- Briefing can occasionally surface goal-level framing ("you've done nothing on Alpha in 10 days")
+**What was built:**
+
+**`claw/goals.py`** (new module):
+- `Goal` dataclass: `name`, `labels` (Todoist label names), `description`
+- `load_goals(config)` — reads optional `goals:` section from config.yaml; returns empty list if absent (feature silently off)
+- `goal_for_task(task, goals)` — returns the first goal whose labels overlap with `task.labels`; None if no match
+- `build_goal_summary(tasks, goals, memory)` — for each goal: counts tasks in current pool, computes days since last probe from memory, flags goals silent for 7+ days as `← QUIET`
+- `goal_line_for_task(task, goals)` — one-line string for probe prompt: `"Goal this task serves: {name} — {description}"`; empty if no match
+
+**Config:**
+- `goals:` section added to `config/config.example.yaml` (commented out — optional)
+- Each goal: `name`, `labels` (list), `description`
+- Feature is entirely off if the section is absent — no migration needed for existing deployments
+
+**Prompt changes:**
+- `BRIEFING_SYSTEM` — new rule: if goal context shows a `← QUIET` goal, weave in one brief mention
+- `BRIEFING_USER_TEMPLATE` — added `{goal_context}` block
+- `TASK_SELECTION_SYSTEM` — new goal context rules: prefer tasks from QUIET goals when quality is otherwise similar; not a mandate, a tiebreaker
+- `TASK_SELECTION_USER_TEMPLATE` — added `{goal_context}` block
+- `PROBE_SYSTEM` — new rule: if a goal is provided, reference it briefly and naturally; don't make it the centrepiece
+- `PROBE_USER_TEMPLATE` — added `{goal_line}` (empty string if no goal, newline-terminated if present)
+
+**Integration:**
+- `briefing.py` — loads goals, builds summary across all fetched tasks (today + habits + waiting), injects into briefing prompt
+- `probe.py` — loads goals once per run, passes `goal_context` into `_select_task()`, passes `goals` list into `_probe_one_task()` for per-task `goal_line`
+- `listener.py` — unchanged; calls `run_probe()` which handles goal loading internally
 
 ---
 
@@ -295,8 +316,7 @@ Ordered by value vs. effort. None of these are committed — just the clearest c
 ### Next: Phase 2 — Adaptive Timing
 Track response latency and engagement per time slot. Needs ~2 weeks of real usage data before the model is meaningful. Until then, Phase 1.9's on-demand probe covers variable timing.
 
-### Phase 3 — Goal layer
-Link tasks to longer-term goals via Todoist labels. Claw notices when a goal has gone silent.
+### ✅ Phase 3 — Goal layer — complete 19 May 2026
 
 ### Lower priority
 - **Sentiment tracking (Phase 4)** — score each session for emotional tone, build a rolling picture

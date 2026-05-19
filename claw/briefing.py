@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 
 from claw.claude_client import ClaudeClient
 from claw.config import load_config
+from claw.goals import load_goals, build_goal_summary
 from claw.memory import MemoryStore, SessionRecord, build_context_block
 from claw.telegram_client import TelegramClient
 from claw.todoist_client import TodoistClient, Task, from_env as todoist_from_env
@@ -74,6 +75,9 @@ def run_briefing(
     habit_summary = _format_habits_for_prompt(habits)
     waiting_summary = _format_waiting_for_prompt(waiting_tasks)
 
+    goals = load_goals(config)
+    goal_context = build_goal_summary(all_tasks + habits + waiting_tasks, goals, memory)
+
     # 4. Ask Claude for the briefing
     briefing_text = claude.complete(
         system=prompts.get_prompt("BRIEFING_SYSTEM"),
@@ -81,6 +85,7 @@ def run_briefing(
             task_list=task_list,
             habit_summary=habit_summary,
             waiting_summary=waiting_summary,
+            goal_context=goal_context,
             memory_context=memory_context,
         ),
         max_tokens=config["claude"]["briefing_max_tokens"],
