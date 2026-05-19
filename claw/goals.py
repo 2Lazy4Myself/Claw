@@ -19,10 +19,7 @@ A task is assigned to a goal if any of its labels match any of the goal's labels
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone, date
-from typing import Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from claw.todoist_client import TodoistClient
+from typing import Optional
 
 from claw.todoist_client import Task
 from claw.memory import MemoryStore
@@ -73,11 +70,10 @@ def parse_goal_description(description: str) -> dict:
     return result
 
 
-def get_goals(todoist: "TodoistClient") -> list[GoalRecord]:
-    """Fetches goals from the Todoist Goals section and parses their descriptions."""
-    tasks = todoist.get_goals()
+def get_goals(goal_tasks: list[Task]) -> list[GoalRecord]:
+    """Parses GoalRecords from pre-fetched goal tasks (from todoist.get_claw_data())."""
     goals = []
-    for task in tasks:
+    for task in goal_tasks:
         fields = parse_goal_description(task.description or "")
         goals.append(GoalRecord(
             task_id=task.id,
@@ -113,14 +109,20 @@ def build_goal_summary(
     if not goals:
         return "No goals configured."
 
+    all_task_ids = [t.id for t in tasks]
+    memories = memory.get_task_memories(all_task_ids)
+
     lines = []
     for goal in goals:
         goal_tasks = [t for t in tasks if goal_for_task(t, [goal]) is not None]
 
-        # Last activity across all linked tasks
+        if not goal_tasks:
+            lines.append(f"- {goal.name}: no linked tasks in current pool")
+            continue
+
         last_activity: Optional[datetime] = None
         for t in goal_tasks:
-            tm = memory.get_task_memory(t.id)
+            tm = memories.get(t.id)
             if tm and tm.last_probed_at:
                 probed = tm.last_probed_at
                 if probed.tzinfo is None:

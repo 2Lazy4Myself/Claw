@@ -304,6 +304,13 @@ Status: Diet consistent, exercise still patchy
 - `goals:` removed from `config.example.yaml` — replaced with documentation comment explaining the Todoist template
 - No config changes required for existing deployments
 
+**Tidy — 19 May 2026:**
+- `get_lifestyle_habits()` + `get_goals()` merged into `get_claw_data() -> (habits, goal_tasks)` — single Todoist fetch per run instead of two
+- `get_goals(todoist)` signature changed to `get_goals(goal_tasks)` — takes pre-fetched tasks, no longer needs a TodoistClient reference
+- `MemoryStore.get_task_memories(ids)` added — bulk SQL lookup; `build_goal_summary()` now uses it instead of N individual calls
+- `build_goal_summary()` regression fixed — goals with no linked tasks in the current pool are shown again ("no linked tasks in current pool") rather than silently omitted
+- Inline `from claw.goals import goal_for_task` inside `_detect_and_update_goal()` moved to module-level import
+
 ---
 
 ## Phase 4 — Sentiment Tracking

@@ -119,6 +119,18 @@ class MemoryStore:
             ).fetchall()
         return [self._row_to_session(row) for row in rows]
 
+    def get_task_memories(self, task_ids: list[str]) -> dict[str, "TaskMemory"]:
+        """Returns {task_id: TaskMemory} for all known IDs. Missing IDs are absent."""
+        if not task_ids:
+            return {}
+        with self._get_connection() as conn:
+            placeholders = ",".join("?" * len(task_ids))
+            rows = conn.execute(
+                f"SELECT * FROM task_memory WHERE task_id IN ({placeholders})",
+                task_ids,
+            ).fetchall()
+        return {row["task_id"]: self._row_to_task_memory(row) for row in rows}
+
     def get_tasks_not_recently_probed(
         self, task_ids: list[str], min_hours: int = 48
     ) -> list[str]:

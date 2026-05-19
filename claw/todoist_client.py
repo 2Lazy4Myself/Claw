@@ -221,11 +221,10 @@ class TodoistClient:
         uid = self._project(project_key)["UNPROCESSED"]
         return [t for t in self.get_tasks_for_project(project_key) if t.section_id == uid]
 
-    def get_goals(self) -> list[Task]:
+    def get_claw_data(self) -> tuple[list[Task], list[Task]]:
         """
-        All non-completed tasks in the 'Goals' section of the Claw project.
-        Section is resolved by name — no hardcoded ID required. Returns empty
-        list if the Goals section doesn't exist yet.
+        Returns (habits, goal_tasks) from a single fetch of the Claw project.
+        Prefer this over calling get_lifestyle_habits() and get_goals() separately.
         """
         project = self._project("claw")
         project_id = project["project_id"]
@@ -236,15 +235,19 @@ class TodoistClient:
             (s["id"] for s in sections if s.get("name", "").strip().lower() == "goals"),
             None,
         )
-        if goals_section_id is None:
-            return []
+        lifestyle_section_id = project["LIFESTYLE"]
 
         raw = self._fetch_all(f"{self.BASE_URL}/tasks", {"project_id": project_id})
-        return [
-            self._parse(r, "claw", "Goals", today)
-            for r in raw
-            if not r.get("is_completed") and r.get("section_id") == goals_section_id
-        ]
+        habits, goal_tasks = [], []
+        for r in raw:
+            if r.get("is_completed"):
+                continue
+            sid = r.get("section_id", "")
+            if sid == lifestyle_section_id:
+                habits.append(self._parse(r, "claw", "Lifestyle", today))
+            elif goals_section_id and sid == goals_section_id:
+                goal_tasks.append(self._parse(r, "claw", "Goals", today))
+        return habits, goal_tasks
 
     def update_goal_current(self, task_id: str, value: str) -> None:
         """

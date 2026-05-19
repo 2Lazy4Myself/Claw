@@ -51,8 +51,8 @@ def run_briefing(
         all_tasks.extend(todoist.get_today_and_overdue(project_key))
     logger.info(f"Fetched {len(all_tasks)} tasks from Todoist")
 
-    habits = todoist.get_lifestyle_habits()
-    logger.info(f"Fetched {len(habits)} lifestyle habits")
+    habits, goal_tasks = todoist.get_claw_data()
+    logger.info(f"Fetched {len(habits)} lifestyle habits, {len(goal_tasks)} goals")
 
     waiting_tasks: list[Task] = []
     for project_key in config["todoist"]["projects"]:
@@ -75,7 +75,7 @@ def run_briefing(
     habit_summary = _format_habits_for_prompt(habits)
     waiting_summary = _format_waiting_for_prompt(waiting_tasks)
 
-    goals = get_goals(todoist)
+    goals = get_goals(goal_tasks)
     goal_context = build_goal_summary(all_tasks + habits + waiting_tasks, goals, memory)
 
     # 4. Ask Claude for the briefing

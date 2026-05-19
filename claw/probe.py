@@ -26,7 +26,7 @@ PROBE_LOCK_FILE = "/tmp/claw_probe.lock"
 
 from claw.claude_client import ClaudeClient
 from claw.config import load_config
-from claw.goals import get_goals, build_goal_summary, goal_line_for_task, GoalRecord
+from claw.goals import get_goals, build_goal_summary, goal_line_for_task, goal_for_task, GoalRecord
 from claw.memory import MemoryStore, TaskMemory, SessionRecord, build_context_block
 from claw.telegram_client import TelegramClient
 from claw.todoist_client import TodoistClient, Task, from_env as todoist_from_env
@@ -79,7 +79,8 @@ def _run_probe_inner(
     all_tasks: list[Task] = []
     for project_key in config["todoist"]["projects"]:
         all_tasks.extend(todoist.get_today_and_overdue(project_key))
-    all_tasks.extend(todoist.get_lifestyle_habits())
+    habits, goal_tasks = todoist.get_claw_data()
+    all_tasks.extend(habits)
     for project_key in config["todoist"]["projects"]:
         all_tasks.extend(todoist.get_waiting_for(project_key))
 
@@ -110,7 +111,7 @@ def _run_probe_inner(
         return
 
     # 3. Constant Cleaning loop — probe tasks until no engagement or cap hit
-    goals = get_goals(todoist)
+    goals = get_goals(goal_tasks)
     goal_context = build_goal_summary(all_tasks, goals, memory)
 
     max_chain = config["behaviour"].get("max_chain_length", 5)
@@ -556,7 +557,6 @@ def _detect_and_update_goal(
     if outcome == "no_reply":
         return
 
-    from claw.goals import goal_for_task
     goal = goal_for_task(task, goals)
     if goal is None or not goal.target:
         return
