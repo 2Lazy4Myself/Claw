@@ -254,36 +254,55 @@ behaviour:
 
 ## Phase 3 — Goal Layer
 
-**Goal:** Tasks are linked to longer-term goals. Claw can notice when you're making progress on a goal vs. drifting from it, and can contextualise task conversations accordingly.
+**Goal:** Tasks and habits are linked to longer-term goals. Claw can notice when a goal has gone quiet, anchor probe conversations in the goal's "why", and write back measurements automatically.
 
-**Status:** ✅ Complete — 19 May 2026
+**Status:** ✅ Complete (revised) — 19 May 2026
 
-**What was built:**
+**Definitions settled during design:**
+- **Task** — discrete, completable action in work/home Todoist projects
+- **Lifestyle** — recurring behaviour in the Claw project (exercise, eating well). Never completes. Tracked by ✓/✗ log.
+- **Goal** — measurable desired outcome. Has a why, a target, a current measurement, an optional deadline. Lives in Todoist.
 
-**`claw/goals.py`** (new module):
-- `Goal` dataclass: `name`, `labels` (Todoist label names), `description`
-- `load_goals(config)` — reads optional `goals:` section from config.yaml; returns empty list if absent (feature silently off)
-- `goal_for_task(task, goals)` — returns the first goal whose labels overlap with `task.labels`; None if no match
-- `build_goal_summary(tasks, goals, memory)` — for each goal: counts tasks in current pool, computes days since last probe from memory, flags goals silent for 7+ days as `← QUIET`
-- `goal_line_for_task(task, goals)` — one-line string for probe prompt: `"Goal this task serves: {name} — {description}"`; empty if no match
+**Todoist structure:**
+- "Goals" section in the Claw project (created by user)
+- Each goal is a task whose description follows a structured template (Key: Value lines)
+- Section is resolved dynamically by name — no hardcoded section ID required
+- Task→Goal linking: shared Todoist labels (e.g. label `health` on both the exercise habit and the "Weight to 85kg" goal)
 
-**Config:**
-- `goals:` section added to `config/config.example.yaml` (commented out — optional)
-- Each goal: `name`, `labels` (list), `description`
-- Feature is entirely off if the section is absent — no migration needed for existing deployments
+**Goal description template:**
+```
+Why: Feel confident, lighter, more energy day to day
+Target: 85kg
+Current: 108kg
+By: 2026-12-01
+Status: Diet consistent, exercise still patchy
+```
+
+**`claw/goals.py`** (rewritten):
+- `GoalRecord` dataclass: `task_id`, `name`, `labels`, `why`, `target`, `current`, `by`, `status`
+- `parse_goal_description(desc)` — parses Key: Value lines, case-insensitive, never raises
+- `get_goals(todoist)` — fetches Goals section from Todoist and returns `list[GoalRecord]`
+- `goal_for_task(task, goals)` — first goal with overlapping labels
+- `build_goal_summary(tasks, goals, memory)` — per goal: current→target progress, last activity, `← QUIET` flag at 7+ days
+- `goal_line_for_task(task, goals)` — multi-line context block for probe prompt: name, progress, deadline, why, status
+
+**`claw/todoist_client.py`:**
+- `get_goals()` — fetches Goals section by name; returns empty list if section doesn't exist
+- `update_goal_current(task_id, value)` — reads description, replaces `Current:` line, writes back via existing `update_task_description()`
+- `_update_description_field(desc, key, value)` — pure helper: replaces or appends a Key: Value line
+
+**`claw/probe.py`:**
+- `_detect_and_update_goal()` — new post-probe step: asks Claude (cheap model) if user mentioned a concrete measurement; if yes, writes it back to the goal's `Current:` field and sends Telegram confirmation
 
 **Prompt changes:**
-- `BRIEFING_SYSTEM` — new rule: if goal context shows a `← QUIET` goal, weave in one brief mention
-- `BRIEFING_USER_TEMPLATE` — added `{goal_context}` block
-- `TASK_SELECTION_SYSTEM` — new goal context rules: prefer tasks from QUIET goals when quality is otherwise similar; not a mandate, a tiebreaker
-- `TASK_SELECTION_USER_TEMPLATE` — added `{goal_context}` block
-- `PROBE_SYSTEM` — new rule: if a goal is provided, reference it briefly and naturally; don't make it the centrepiece
-- `PROBE_USER_TEMPLATE` — added `{goal_line}` (empty string if no goal, newline-terminated if present)
+- `PROBE_SYSTEM` — use the gap, not the label: "you're at 108kg, aiming for 85"
+- `TASK_SELECTION_SYSTEM` — deadline urgency rule: weight tasks from goals whose `By` is within 60 days
+- `GOAL_UPDATE_DETECTION_SYSTEM` — new prompt: detects explicit measurements ("I weighed 107kg") from probe conversation; strict (no inference, no estimates)
+- `BRIEFING_SYSTEM`, `TASK_SELECTION_SYSTEM` — QUIET goal framing and urgency rules
 
-**Integration:**
-- `briefing.py` — loads goals, builds summary across all fetched tasks (today + habits + waiting), injects into briefing prompt
-- `probe.py` — loads goals once per run, passes `goal_context` into `_select_task()`, passes `goals` list into `_probe_one_task()` for per-task `goal_line`
-- `listener.py` — unchanged; calls `run_probe()` which handles goal loading internally
+**Config:**
+- `goals:` removed from `config.example.yaml` — replaced with documentation comment explaining the Todoist template
+- No config changes required for existing deployments
 
 ---
 

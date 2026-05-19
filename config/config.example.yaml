@@ -89,18 +89,15 @@ behaviour:
   max_chain_length: 5
 
 # ─── Goals ───────────────────────────────────────────────────────────────────
-# Optional. Define longer-term goals and map them to Todoist label names.
-# Claw will notice when a goal has gone quiet and surface it in briefings and
-# probe selection. Remove this section entirely to disable the goal layer.
+# Goals are managed in Todoist — not here.
+# Create a "Goals" section in your Claw project. Each goal is a task with this
+# description template (all fields optional except Why):
 #
-# labels: one or more Todoist label names. A task is assigned to a goal if any
-#         of its labels match. First matching goal wins.
-# description: one-line summary shown to Claude for context during probes.
+#   Why: Feel confident, lighter, more energy day to day
+#   Target: 85kg
+#   Current: 108kg
+#   By: 2026-12-01
+#   Status: Diet consistent, exercise still patchy
 #
-# goals:
-#   - name: "Project Alpha"
-#     labels: ["alpha"]
-#     description: "Launch the new client portal by Q3"
-#   - name: "Health & Fitness"
-#     labels: ["fitness", "health"]
-#     description: "Build consistent exercise and nutrition habits"
+# Add a Todoist label to both the goal task and any habits/tasks it covers.
+# That label is the link — Claw uses it to connect daily actions to goals.

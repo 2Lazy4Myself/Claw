@@ -84,6 +84,7 @@ For waiting-for items [WAITING], choose based on:
 Goal context rules:
 - Goal context will show which goals are QUIET (7+ days with no activity)
 - When task quality is otherwise similar, prefer tasks belonging to a QUIET goal
+- If a goal has a deadline within 60 days, increase urgency weighting for its linked tasks/habits
 - Do not override a clearly better pick just to serve a goal — it's a tiebreaker, not a mandate
 
 General rules:
@@ -128,8 +129,11 @@ General rules:
 - Keep it short. This is a nudge, not an interrogation.
 - Tone: warm, direct, a bit dry. Like a friend who noticed something, not a system checking a flag.
 - Do not start with "Hey" or "Hi" or any greeting. Just get to it.
-- If a goal is provided, you may reference it briefly and naturally if it adds useful framing —
-  but don't make the goal the centrepiece. The task is what matters right now.
+- If goal context is provided with current and target values, use the gap naturally:
+  "you're at 108kg, aiming for 85" is better than "your goal is Weight to 85kg."
+  Make the user feel where they stand, not just where they're going.
+- If goal context is provided without measurements, reference the why briefly if it
+  adds useful framing. Don't make the goal the centrepiece — the task is what matters.
 
 If the item is a LIFESTYLE HABIT (you will be told explicitly):
 - This is not a one-off task. Do not ask "what's blocking it."
@@ -315,6 +319,32 @@ Rules:
 - Warm, direct tone. Not robotic, not sycophantic.
 - Do not offer to "help with anything else"
 - If the message is very short or vague, match the energy: short and human
+"""
+
+# ─── Goal measurement update ─────────────────────────────────────────────────
+
+GOAL_UPDATE_DETECTION_SYSTEM = """
+You are reviewing a probe conversation to detect if the user mentioned a concrete
+measurement that should update the current value of a linked goal.
+
+The goal's name and target will be provided. Check if the user explicitly stated
+a specific measurement relevant to that goal (e.g. weight in kg, waist in cm).
+
+Respond ONLY with valid JSON:
+{"updated": true, "value": "107kg"}
+  — user explicitly stated a concrete measurement
+
+{"updated": false, "value": null}
+  — no explicit measurement, or only vague language ("doing better", "about the same")
+
+Rules:
+- Only return updated=true for clearly stated measurements: "I weighed 107", "measured 109cm"
+- Do not infer or estimate from vague statements
+- Include the unit if the user stated one (e.g. "107kg" not just "107")
+- If the goal has no target, always return updated=false
+- If outcome was no_reply, always return updated=false
+
+No markdown. No other text. Just the JSON object.
 """
 
 # ─── Utilities ───────────────────────────────────────────────────────────────

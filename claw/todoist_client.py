@@ -221,6 +221,46 @@ class TodoistClient:
         uid = self._project(project_key)["UNPROCESSED"]
         return [t for t in self.get_tasks_for_project(project_key) if t.section_id == uid]
 
+    def get_goals(self) -> list[Task]:
+        """
+        All non-completed tasks in the 'Goals' section of the Claw project.
+        Section is resolved by name — no hardcoded ID required. Returns empty
+        list if the Goals section doesn't exist yet.
+        """
+        project = self._project("claw")
+        project_id = project["project_id"]
+        today = date.today()
+
+        sections = self._fetch_all(f"{self.BASE_URL}/sections", {"project_id": project_id})
+        goals_section_id = next(
+            (s["id"] for s in sections if s.get("name", "").strip().lower() == "goals"),
+            None,
+        )
+        if goals_section_id is None:
+            return []
+
+        raw = self._fetch_all(f"{self.BASE_URL}/tasks", {"project_id": project_id})
+        return [
+            self._parse(r, "claw", "Goals", today)
+            for r in raw
+            if not r.get("is_completed") and r.get("section_id") == goals_section_id
+        ]
+
+    def update_goal_current(self, task_id: str, value: str) -> None:
+        """
+        Updates the 'Current:' field in a goal task's description.
+        Replaces an existing Current: line or appends one if absent.
+        """
+        try:
+            resp = self._session.get(f"{self.BASE_URL}/tasks/{task_id}", timeout=10)
+            resp.raise_for_status()
+            current_desc = resp.json().get("description", "") or ""
+        except requests.RequestException as exc:
+            raise TodoistAPIError(str(exc)) from exc
+
+        new_desc = _update_description_field(current_desc, "Current", value)
+        self.update_task_description(task_id, new_desc)
+
     # ─── Internal ─────────────────────────────────────────────────────────────
 
     def _project(self, project_key: str) -> dict[str, str]:
@@ -297,3 +337,22 @@ def from_env() -> TodoistClient:
     if not token:
         raise EnvironmentError("TODOIST_API_TOKEN is not set")
     return TodoistClient(token)
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def _update_description_field(description: str, key: str, value: str) -> str:
+    """
+    Replaces a 'Key: Value' line in a structured task description, or appends
+    it if no such line exists. Case-preserving on the key name.
+    Pure function — no I/O.
+    """
+    key_lower = key.strip().lower()
+    lines = description.splitlines()
+
+    for i, line in enumerate(lines):
+        if line.strip().lower().startswith(f"{key_lower}:"):
+            lines[i] = f"{key}: {value}"
+            return "\n".join(lines)
+
+    return (description.rstrip() + f"\n{key}: {value}") if description.strip() else f"{key}: {value}"

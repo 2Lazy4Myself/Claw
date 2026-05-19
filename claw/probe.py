@@ -26,7 +26,7 @@ PROBE_LOCK_FILE = "/tmp/claw_probe.lock"
 
 from claw.claude_client import ClaudeClient
 from claw.config import load_config
-from claw.goals import load_goals, build_goal_summary, goal_line_for_task, Goal
+from claw.goals import get_goals, build_goal_summary, goal_line_for_task, GoalRecord
 from claw.memory import MemoryStore, TaskMemory, SessionRecord, build_context_block
 from claw.telegram_client import TelegramClient
 from claw.todoist_client import TodoistClient, Task, from_env as todoist_from_env
@@ -110,7 +110,7 @@ def _run_probe_inner(
         return
 
     # 3. Constant Cleaning loop — probe tasks until no engagement or cap hit
-    goals = load_goals(config)
+    goals = get_goals(todoist)
     goal_context = build_goal_summary(all_tasks, goals, memory)
 
     max_chain = config["behaviour"].get("max_chain_length", 5)
@@ -156,7 +156,7 @@ def _probe_one_task(
     config: dict,
     chain_index: int,
     last_discussed: Optional[Task],
-    goals: Optional[list[Goal]] = None,
+    goals: Optional[list[GoalRecord]] = None,
 ) -> str:
     """
     Runs one complete probe conversation for a single task.
@@ -204,6 +204,8 @@ def _probe_one_task(
     subtasks = todoist.get_subtasks(task.id)
     _detect_and_close(task, subtasks, conversation_history, outcome, todoist, telegram, claude, config)
     snooze_until = _detect_and_snooze(task, conversation_history, outcome, telegram, claude, config)
+    if goals:
+        _detect_and_update_goal(task, goals, conversation_history, outcome, todoist, telegram, claude, config)
 
     raw_transcript = json.dumps(conversation_history)
     summary = _summarise_session(raw_transcript, task, outcome, claude, config)
@@ -534,6 +536,62 @@ def _detect_and_snooze(
     telegram.send_message(f"Got it — I'll leave this one until {snooze_display}.")
     logger.info(f"Snoozed task {task.id} until {date_iso}")
     return snooze_dt
+
+
+def _detect_and_update_goal(
+    task: Task,
+    goals: list[GoalRecord],
+    history: list[dict],
+    outcome: str,
+    todoist: TodoistClient,
+    telegram: TelegramClient,
+    claude: ClaudeClient,
+    config: dict,
+) -> None:
+    """
+    After a probe, detects if the user mentioned a concrete measurement update
+    for a linked goal's Current field. If so, writes it back to Todoist and
+    sends a brief confirmation.
+    """
+    if outcome == "no_reply":
+        return
+
+    from claw.goals import goal_for_task
+    goal = goal_for_task(task, goals)
+    if goal is None or not goal.target:
+        return
+
+    raw = claude.complete(
+        system=prompts.get_prompt("GOAL_UPDATE_DETECTION_SYSTEM"),
+        user=(
+            f"Goal: {goal.name}\n"
+            f"Target: {goal.target}\n"
+            f"Current: {goal.current or 'unknown'}\n\n"
+            f"Conversation:\n{json.dumps(history)}"
+        ),
+        max_tokens=60,
+        model=config["claude"]["selection_model"],
+    )
+
+    try:
+        detection = json.loads(_strip_json_fences(raw))
+    except json.JSONDecodeError:
+        logger.warning(f"Goal update detection returned non-JSON: {raw!r}")
+        return
+
+    if not detection.get("updated"):
+        return
+
+    value = detection.get("value")
+    if not value:
+        return
+
+    try:
+        todoist.update_goal_current(goal.task_id, value)
+        telegram.send_message(f"Updated: {goal.name} now {value} (target {goal.target}).")
+        logger.info(f"Updated goal {goal.task_id} Current: {value}")
+    except Exception as e:
+        logger.warning(f"Failed to update goal current: {e}")
 
 
 def _is_snoozed(task: Task, memory: MemoryStore, now: datetime) -> bool:

@@ -527,3 +527,143 @@ class TestFormatWaitingForPrompt:
         result = _format_waiting_for_prompt(tasks)
         assert "OldOne" in result
         assert "10d" in result
+
+
+# ─── Goal parsing ─────────────────────────────────────────────────────────────
+
+class TestParseGoalDescription:
+    def test_full_template(self):
+        from claw.goals import parse_goal_description
+        desc = "Why: Feel confident\nTarget: 85kg\nCurrent: 108kg\nBy: 2026-12-01\nStatus: Making progress"
+        result = parse_goal_description(desc)
+        assert result["why"] == "Feel confident"
+        assert result["target"] == "85kg"
+        assert result["current"] == "108kg"
+        assert result["by"].isoformat() == "2026-12-01"
+        assert result["status"] == "Making progress"
+
+    def test_missing_fields_return_defaults(self):
+        from claw.goals import parse_goal_description
+        result = parse_goal_description("Why: Feel better")
+        assert result["why"] == "Feel better"
+        assert result["target"] is None
+        assert result["current"] is None
+        assert result["by"] is None
+        assert result["status"] == ""
+
+    def test_empty_description(self):
+        from claw.goals import parse_goal_description
+        result = parse_goal_description("")
+        assert result["why"] == ""
+        assert result["target"] is None
+
+    def test_case_insensitive_keys(self):
+        from claw.goals import parse_goal_description
+        desc = "WHY: Confidence\ntarget: 100cm\nCURRENT: 112cm"
+        result = parse_goal_description(desc)
+        assert result["why"] == "Confidence"
+        assert result["target"] == "100cm"
+        assert result["current"] == "112cm"
+
+    def test_invalid_date_ignored(self):
+        from claw.goals import parse_goal_description
+        result = parse_goal_description("By: not-a-date")
+        assert result["by"] is None
+
+    def test_lines_without_colon_ignored(self):
+        from claw.goals import parse_goal_description
+        desc = "Some freeform line\nWhy: Feel better\nAnother line"
+        result = parse_goal_description(desc)
+        assert result["why"] == "Feel better"
+
+
+class TestGoalForTask:
+    def test_matching_label_returns_goal(self):
+        from claw.goals import goal_for_task, GoalRecord
+        from datetime import date
+        goal = GoalRecord(task_id="g1", name="Weight to 85kg", labels=["health"],
+                         why="Feel better", target="85kg", current="108kg",
+                         by=None, status="")
+        task = make_task(labels=["health"])
+        assert goal_for_task(task, [goal]) is goal
+
+    def test_no_matching_label_returns_none(self):
+        from claw.goals import goal_for_task, GoalRecord
+        goal = GoalRecord(task_id="g1", name="Weight to 85kg", labels=["health"],
+                         why="", target="85kg", current=None, by=None, status="")
+        task = make_task(labels=["work", "alpha"])
+        assert goal_for_task(task, [goal]) is None
+
+    def test_first_matching_goal_wins(self):
+        from claw.goals import goal_for_task, GoalRecord
+        goal1 = GoalRecord(task_id="g1", name="Goal A", labels=["health"],
+                          why="", target=None, current=None, by=None, status="")
+        goal2 = GoalRecord(task_id="g2", name="Goal B", labels=["health"],
+                          why="", target=None, current=None, by=None, status="")
+        task = make_task(labels=["health"])
+        assert goal_for_task(task, [goal1, goal2]) is goal1
+
+    def test_empty_goals_returns_none(self):
+        from claw.goals import goal_for_task
+        task = make_task(labels=["health"])
+        assert goal_for_task(task, []) is None
+
+
+class TestGoalLineForTask:
+    def test_full_goal_renders_all_fields(self):
+        from claw.goals import goal_line_for_task, GoalRecord
+        from datetime import date
+        goal = GoalRecord(task_id="g1", name="Weight to 85kg", labels=["health"],
+                         why="Feel confident", target="85kg", current="108kg",
+                         by=None, status="Improving")
+        task = make_task(labels=["health"])
+        line = goal_line_for_task(task, [goal])
+        assert "Weight to 85kg" in line
+        assert "108kg" in line
+        assert "85kg" in line
+        assert "Feel confident" in line
+        assert "Improving" in line
+
+    def test_no_goal_returns_empty_string(self):
+        from claw.goals import goal_line_for_task
+        task = make_task(labels=[])
+        assert goal_line_for_task(task, []) == ""
+
+    def test_goal_without_current_shows_target_only(self):
+        from claw.goals import goal_line_for_task, GoalRecord
+        goal = GoalRecord(task_id="g1", name="Waist to 100cm", labels=["health"],
+                         why="", target="100cm", current=None, by=None, status="")
+        task = make_task(labels=["health"])
+        line = goal_line_for_task(task, [goal])
+        assert "100cm" in line
+        assert "→" not in line
+
+
+# ─── Description field update ─────────────────────────────────────────────────
+
+class TestUpdateDescriptionField:
+    def test_replaces_existing_field(self):
+        from claw.todoist_client import _update_description_field
+        desc = "Why: Feel better\nCurrent: 108kg\nTarget: 85kg"
+        result = _update_description_field(desc, "Current", "107kg")
+        assert "Current: 107kg" in result
+        assert "108kg" not in result
+
+    def test_appends_missing_field(self):
+        from claw.todoist_client import _update_description_field
+        desc = "Why: Feel better\nTarget: 85kg"
+        result = _update_description_field(desc, "Current", "107kg")
+        assert "Current: 107kg" in result
+        assert "Why: Feel better" in result
+
+    def test_empty_description_creates_field(self):
+        from claw.todoist_client import _update_description_field
+        result = _update_description_field("", "Current", "107kg")
+        assert result == "Current: 107kg"
+
+    def test_case_insensitive_key_match(self):
+        from claw.todoist_client import _update_description_field
+        desc = "current: 108kg\nTarget: 85kg"
+        result = _update_description_field(desc, "Current", "107kg")
+        assert "Current: 107kg" in result
+        assert "108kg" not in result
