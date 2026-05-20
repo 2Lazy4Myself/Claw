@@ -75,6 +75,11 @@ def _run_probe_inner(
     telegram: TelegramClient,
     config: dict,
 ) -> None:
+    cap = config["schedule"].get("max_pending_messages", 3)
+    if memory.pending_count() >= cap:
+        logger.info(f"Pending message cap ({cap}) reached — skipping probe")
+        return
+
     # 1. Fetch tasks from all configured projects + lifestyle habits + waiting-for
     all_tasks: list[Task] = []
     for project_key in config["todoist"]["projects"]:
@@ -137,7 +142,7 @@ def _run_probe_inner(
         logger.info(f"Probing task [{chain_index + 1}/{max_chain}]: {selected_task.display_name}")
         outcome = _probe_one_task(
             selected_task, todoist, memory, claude, telegram, config,
-            chain_index=chain_index, last_discussed=last_discussed, goals=goals,
+            chain_index=chain_index, last_discussed=last_discussed, goals=goals, cap=cap,
         )
 
         discussed_ids.add(selected_task.id)
@@ -158,6 +163,7 @@ def _probe_one_task(
     chain_index: int,
     last_discussed: Optional[Task],
     goals: Optional[list[GoalRecord]] = None,
+    cap: int = 3,
 ) -> str:
     """
     Runs one complete probe conversation for a single task.
@@ -190,7 +196,14 @@ def _probe_one_task(
         user=opening_user_msg,
         max_tokens=config["claude"]["probe_max_tokens"],
     )
-    telegram.send_message(opening)
+
+    # Race-guard: cap may have been reached between the outer check and this send
+    msg_code = memory.assign_message_code(opening, "probe", cap)
+    if msg_code is None:
+        logger.info("Pending message cap reached before send — skipping task")
+        return "no_reply"
+
+    telegram.send_message(f"{msg_code}: {opening}")
 
     conversation_history = [
         {"role": "user", "content": opening_user_msg},
@@ -198,6 +211,10 @@ def _probe_one_task(
     ]
     outcome = _run_conversation_loop(task, conversation_history, memory, claude, telegram, config)
     logger.info(f"Probe outcome: {outcome}")
+
+    # If the user engaged, the slot is answered — close it so the next cron can top up
+    if outcome != "no_reply":
+        memory.close_message_code(msg_code)
 
     if task.is_habit:
         _write_habit_log(task, conversation_history, outcome, todoist, claude, config)

@@ -67,6 +67,7 @@ schedule:
   active_window_end: "21:00"        # latest Claw will speak
   briefing_window_end: "10:00"      # briefing only fires before this time
   min_minutes_between_sessions: 90  # cooldown between any two sessions
+  max_pending_messages: 3           # max unanswered M-coded probes before Claw goes quiet (briefings bypass this)
 
 # ─── Behaviour ───────────────────────────────────────────────────────────────
 behaviour:

@@ -8,8 +8,9 @@ SQLite database and exposes a clean interface. Nothing outside this module touch
 the DB directly.
 
 Schema:
-    task_memory     — one row per Todoist task ID, tracks last probe date and notes
-    sessions        — one row per briefing/probe run, stores summary and outcome
+    task_memory       — one row per Todoist task ID, tracks last probe date and notes
+    sessions          — one row per briefing/probe run, stores summary and outcome
+    pending_messages  — one row per unanswered M-coded message (probes / follow-ups)
 
 All timestamps stored as ISO 8601 strings in UTC.
 """
@@ -187,6 +188,65 @@ class MemoryStore:
         recently_probed = {row["task_id"] for row in rows}
         return [tid for tid in task_ids if tid not in recently_probed]
 
+    # ─── Pending messages (M-code registry) ───────────────────────────────────
+
+    def assign_message_code(self, text: str, msg_type: str, cap: int = 3) -> Optional[str]:
+        """
+        Assigns the lowest free M-code (M1–M9) for an outbound probe/follow-up.
+        Returns the code string, or None if all slots up to cap are already pending.
+        """
+        with self._get_connection() as conn:
+            pending_codes = {
+                row["code"] for row in conn.execute(
+                    "SELECT code FROM pending_messages WHERE status = 'pending'"
+                ).fetchall()
+            }
+            if len(pending_codes) >= cap:
+                return None
+            for i in range(1, 10):
+                code = f"M{i}"
+                if code not in pending_codes:
+                    conn.execute(
+                        "INSERT INTO pending_messages (code, text, type, sent_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (code, text, msg_type, _dt_to_str(datetime.now(timezone.utc))),
+                    )
+                    return code
+        return None
+
+    def close_message_code(self, code: str) -> Optional[dict]:
+        """Marks a pending message as answered. Returns the row or None if not found."""
+        code = code.upper()
+        now = _dt_to_str(datetime.now(timezone.utc))
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM pending_messages WHERE code = ? AND status = 'pending'",
+                (code,),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute(
+                "UPDATE pending_messages SET status = 'answered', answered_at = ? WHERE code = ?",
+                (now, code),
+            )
+            return dict(row)
+
+    def pending_count(self) -> int:
+        """Returns the number of pending (unanswered) M-coded messages."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM pending_messages WHERE status = 'pending'"
+            ).fetchone()
+        return row["n"] if row else 0
+
+    def get_pending_messages(self) -> list[dict]:
+        """Returns all pending message rows, ordered by code."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM pending_messages WHERE status = 'pending' ORDER BY code"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     # ─── Internal ─────────────────────────────────────────────────────────────
 
     def get_listener_offset(self) -> Optional[int]:
@@ -237,6 +297,16 @@ class MemoryStore:
                 CREATE TABLE IF NOT EXISTS listener_state (
                     key TEXT PRIMARY KEY,
                     value TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS pending_messages (
+                    code        TEXT PRIMARY KEY,
+                    text        TEXT NOT NULL,
+                    type        TEXT NOT NULL,
+                    sent_at     TEXT NOT NULL,
+                    status      TEXT NOT NULL DEFAULT 'pending',
+                    answered_at TEXT
                 )
             """)
 
