@@ -322,7 +322,8 @@ class TestConfigValidation:
             "telegram": {"allowed_user_id": 123},
             "todoist": {"projects": ["work", "home"]},
             "memory": {"db_path": "data/claw.db"},
-            "claude": {"model": "claude-sonnet-4-20250514", "selection_model": "claude-haiku-4-5-20251001"},
+            "litellm": {"base_url": "http://localhost:4000"},
+            "claude": {"model": "claude-sonnet-4.6", "selection_model": "llama-3.3-70b"},
             "schedule": {
                 "timezone": "Europe/London",
                 "active_window_start": "07:00",
@@ -339,7 +340,8 @@ class TestConfigValidation:
             "telegram": {"allowed_user_id": 123},
             # todoist missing
             "memory": {"db_path": "data/claw.db"},
-            "claude": {"model": "claude-sonnet-4-20250514", "selection_model": "claude-haiku-4-5-20251001"},
+            "litellm": {"base_url": "http://localhost:4000"},
+            "claude": {"model": "claude-sonnet-4.6", "selection_model": "llama-3.3-70b"},
         }
         with pytest.raises(ValueError, match="todoist"):
             _validate(config)
@@ -350,7 +352,8 @@ class TestConfigValidation:
             "telegram": {"allowed_user_id": 123},
             "todoist": {"projects": ["work"]},
             "memory": {},  # db_path missing
-            "claude": {"model": "claude-sonnet-4-20250514", "selection_model": "claude-haiku-4-5-20251001"},
+            "litellm": {"base_url": "http://localhost:4000"},
+            "claude": {"model": "claude-sonnet-4.6", "selection_model": "llama-3.3-70b"},
         }
         with pytest.raises(ValueError, match="db_path"):
             _validate(config)
@@ -361,9 +364,22 @@ class TestConfigValidation:
             "telegram": {"allowed_user_id": 123},
             "todoist": {"projects": ["work"]},
             "memory": {"db_path": "data/claw.db"},
-            "claude": {"model": "claude-sonnet-4-20250514"},  # selection_model missing
+            "litellm": {"base_url": "http://localhost:4000"},
+            "claude": {"model": "claude-sonnet-4.6"},  # selection_model missing
         }
         with pytest.raises(ValueError, match="selection_model"):
+            _validate(config)
+
+    def test_missing_litellm_base_url_raises_value_error(self):
+        from claw.config import _validate
+        config = {
+            "telegram": {"allowed_user_id": 123},
+            "todoist": {"projects": ["work"]},
+            "memory": {"db_path": "data/claw.db"},
+            # litellm missing
+            "claude": {"model": "claude-sonnet-4.6", "selection_model": "llama-3.3-70b"},
+        }
+        with pytest.raises(ValueError, match="base_url"):
             _validate(config)
 
 

@@ -1,7 +1,7 @@
 """
 claude_client.py
 
-Responsibility: Thin wrapper around the Anthropic API.
+Responsibility: Thin wrapper around an OpenAI-compatible AI API (LiteLLM proxy).
 
 This module handles: auth, retry on transient errors, response parsing,
 and raising descriptive errors on failure. It knows nothing about tasks,
@@ -9,28 +9,31 @@ memory, or Telegram.
 
 All callers get back a plain string. Format parsing (e.g. extracting JSON
 from a task selection response) happens in the calling module, not here.
+
+Calls are routed through LiteLLM at the configured base_url. Two tiers:
+  - config["claude"]["model"]            → powerful model (probe, briefing)
+  - config["claude"]["selection_model"]  → cheap model (selection, summaries)
 """
 
 from __future__ import annotations
-import json
 import logging
 import os
 import time
-import anthropic
+import openai
 
 logger = logging.getLogger(__name__)
 
 
 class ClaudeClient:
     """
-    Wraps the Anthropic Messages API for synchronous, single-turn completions.
+    Wraps an OpenAI-compatible chat completions API (LiteLLM proxy).
 
     For multi-turn probe conversations, the caller maintains the message history
     and passes it to complete_with_history().
     """
 
-    def __init__(self, api_key: str, config: dict) -> None:
-        self._client = anthropic.Anthropic(api_key=api_key)
+    def __init__(self, base_url: str, api_key: str, config: dict) -> None:
+        self._client = openai.OpenAI(base_url=base_url, api_key=api_key)
         self._config = config
 
     def complete(
@@ -103,51 +106,53 @@ class ClaudeClient:
         model: str = None,
     ) -> str:
         model = model or self._config["claude"]["model"]
+        full_messages = [{"role": "system", "content": system}] + messages
         last_error = None
 
         for attempt in range(retries + 1):
             try:
-                response = self._client.messages.create(
+                response = self._client.chat.completions.create(
                     model=model,
                     max_tokens=max_tokens,
-                    system=system,
-                    messages=messages,
+                    messages=full_messages,
                 )
-                text = response.content[0].text
-                logger.debug(f"Claude responded ({len(text)} chars)")
+                text = response.choices[0].message.content
+                logger.debug(f"AI responded ({len(text)} chars)")
                 return text
 
-            except anthropic.RateLimitError as e:
+            except openai.RateLimitError as e:
                 wait = 2 ** attempt
                 logger.warning(f"Rate limited, retrying in {wait}s (attempt {attempt + 1})")
                 time.sleep(wait)
                 last_error = e
 
-            except anthropic.APIConnectionError as e:
+            except openai.APIConnectionError as e:
                 wait = 2 ** attempt
                 logger.warning(f"Connection error, retrying in {wait}s (attempt {attempt + 1})")
                 time.sleep(wait)
                 last_error = e
 
-            except anthropic.APIError as e:
-                raise ClaudeAPIError(f"Anthropic API error: {e}") from e
+            except openai.APIError as e:
+                raise ClaudeAPIError(f"AI API error: {e}") from e
 
-        raise ClaudeAPIError(f"Claude API failed after {retries + 1} attempts: {last_error}")
+        raise ClaudeAPIError(f"AI API failed after {retries + 1} attempts: {last_error}")
 
     @classmethod
     def from_env(cls, config: dict) -> "ClaudeClient":
         """
-        Factory that reads ANTHROPIC_API_KEY from the environment.
+        Factory that reads LITELLM_API_KEY and optionally LITELLM_BASE_URL from the environment.
+        Falls back to config["litellm"]["base_url"] if the env var is not set.
 
         Raises:
-            EnvironmentError: If the key is not set.
+            EnvironmentError: If LITELLM_API_KEY is not set.
         """
-        key = os.environ.get("ANTHROPIC_API_KEY")
-        if not key:
-            raise EnvironmentError("ANTHROPIC_API_KEY is not set")
-        return cls(api_key=key, config=config)
+        base_url = os.environ.get("LITELLM_BASE_URL") or config["litellm"]["base_url"]
+        api_key = os.environ.get("LITELLM_API_KEY")
+        if not api_key:
+            raise EnvironmentError("LITELLM_API_KEY is not set")
+        return cls(base_url=base_url, api_key=api_key, config=config)
 
 
 class ClaudeAPIError(Exception):
-    """Raised when the Claude API returns an unrecoverable error."""
+    """Raised when the AI API returns an unrecoverable error."""
     pass

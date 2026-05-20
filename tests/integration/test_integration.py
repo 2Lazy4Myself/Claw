@@ -21,7 +21,7 @@ load_dotenv()
 # Skip all integration tests if credentials are missing
 def credentials_present():
     return all([
-        os.environ.get("ANTHROPIC_API_KEY"),
+        os.environ.get("LITELLM_API_KEY"),
         os.environ.get("TELEGRAM_BOT_TOKEN"),
         os.environ.get("TODOIST_API_TOKEN"),
     ])
@@ -53,7 +53,10 @@ class TestTodoistIntegration:
 class TestClaudeIntegration:
     def test_single_turn_completion_returns_string(self):
         from claw.claude_client import ClaudeClient
-        config = {"claude": {"model": "claude-sonnet-4-6", "selection_model": "claude-haiku-4-5-20251001"}}
+        config = {
+            "litellm": {"base_url": "http://192.168.1.100:4000"},
+            "claude": {"model": "claude-sonnet-4.6", "selection_model": "llama-3.3-70b"},
+        }
         client = ClaudeClient.from_env(config)
         result = client.complete(
             system="You are a helpful assistant. Reply in 5 words or fewer.",
@@ -69,7 +72,10 @@ class TestClaudeIntegration:
         from claw.claude_client import ClaudeClient
         from claw import prompts
 
-        config = {"claude": {"model": "claude-sonnet-4-6", "selection_model": "claude-haiku-4-5-20251001"}}
+        config = {
+            "litellm": {"base_url": "http://192.168.1.100:4000"},
+            "claude": {"model": "claude-sonnet-4.6", "selection_model": "llama-3.3-70b"},
+        }
         client = ClaudeClient.from_env(config)
 
         result = client.complete(

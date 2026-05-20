@@ -59,6 +59,7 @@ def _validate(config: dict) -> None:
         ("telegram", "allowed_user_id"),
         ("todoist",),
         ("memory", "db_path"),
+        ("litellm", "base_url"),
         ("claude", "model"),
         ("claude", "selection_model"),
         ("schedule", "timezone"),

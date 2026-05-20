@@ -416,6 +416,62 @@ schedule:
 
 ---
 
+## Phase 5 — Daemon Architecture
+
+**Goal:** Eliminate the crontab-driven execution model. Collapse the two-process (orchestrator + listener) system into a single persistent daemon that runs a background polling thread and dispatches messages from a shared queue. Remove the lock file. Fix the Telegram offset conflict.
+
+**Status:** ✅ Complete — 20 May 2026
+
+**What was built:**
+
+- `claw/main.py` — new daemon entrypoint. Background thread runs `telegram.get_updates()` continuously and feeds a `queue.Queue`. Main loop: every 30 minutes calls `orchestrator.run_orchestrator(reply_queue=incoming)`; otherwise drains the queue via `listener.handle_update()`.
+- `listener.handle_update(update, ..., reply_queue)` — new public function. Extracts the message, validates the user, and dispatches. Called by the daemon. `run_listener()` retained for script/manual use.
+- `probe.run_probe(..., reply_queue)` — accepts optional `reply_queue`; threaded through `_run_probe_inner` → `_probe_one_task` → `_run_conversation_loop` → `telegram.wait_for_reply(timeout, reply_queue)`.
+- `telegram.wait_for_reply(timeout, reply_queue)` — when `reply_queue` is provided, reads from the shared queue instead of calling `getUpdates` directly. Direct-poll path retained for script mode.
+- `orchestrator.run_orchestrator(..., reply_queue)` — passes `reply_queue` through to `run_probe()`.
+- `PROBE_LOCK_FILE` removed from `probe.py` and `listener.py`; lock file creation/removal removed from `run_probe()`.
+- `Dockerfile` — removed crontab copy, changed `CMD` to `["python", "-m", "claw.main"]`.
+- `docker/crontab` — removed.
+- `pyproject.toml` — added `claw`, `claw-orchestrator`, `claw-listener` entry points.
+
+**Key decisions:**
+
+- No APScheduler — a simple `time.time()` check in the main loop is sufficient for a 30-minute interval; avoids a new dependency (see ADR-008)
+- `reply_queue` is optional in all function signatures — script-mode paths (`run_probe`, `run_orchestrator`, `run_listener`) continue to work without it
+- Polling thread is a daemon thread — it exits automatically when the main process exits; no explicit shutdown needed
+- Offset written to SQLite on each update — survives restarts correctly; polling thread reads the persisted offset on startup
+
+**What was learned:**
+
+- Threading `reply_queue` through four call levels (`run_probe` → `_run_probe_inner` → `_probe_one_task` → `_run_conversation_loop`) is verbose but explicit — every caller knows whether it's in daemon or script mode. A module-level global would be simpler but makes testing harder.
+- The `queue.Empty` timeout loop in `wait_for_reply` (reading in 1-second chunks until deadline) keeps the probe responsive without busy-waiting.
+
+---
+
+## LiteLLM Integration — May 2026
+
+**Goal:** Remove direct Anthropic API dependency from Claw. Route all AI calls through the LiteLLM proxy at `192.168.1.100:4000`. Centralise key management in LiteLLM — Claw's `.env` no longer holds an Anthropic key.
+
+**Status:** ✅ Complete — 20 May 2026
+
+**What changed:**
+
+- `claw/claude_client.py` — replaced `anthropic` library with `openai`. `ClaudeClient.__init__` now takes `base_url` + `api_key`. `_call_with_retry` uses `openai.OpenAI.chat.completions.create()`; system prompt prepended as `{"role": "system", ...}` message. `from_env()` reads `LITELLM_API_KEY` and `LITELLM_BASE_URL` (falls back to `config["litellm"]["base_url"]`).
+- `config/config.example.yaml` — added `litellm.base_url: "http://192.168.1.100:4000"`. Updated `claude.selection_model` from `claude-haiku-4-5-20251001` to `groq-compound-mini` (Groq via LiteLLM, ~$0.50/$1.00 per MTok).
+- `claw/config.py` — added `("litellm", "base_url")` to required validation keys.
+- `pyproject.toml` / `Dockerfile` — swapped `anthropic>=0.25.0` for `openai>=1.0.0`.
+- `.env` — replaced `ANTHROPIC_API_KEY` with `LITELLM_API_KEY`.
+- `tests/unit/test_core.py` — config fixtures updated to include `litellm.base_url`; new test for missing `litellm.base_url` raises ValueError (90 tests total).
+- `tests/integration/test_integration.py` — credential check and config dicts updated to use `LITELLM_API_KEY` and LiteLLM model aliases.
+
+**Model tier mapping (LiteLLM aliases):**
+- `claude-sonnet-4.6` → `anthropic/claude-sonnet-4-6` — used for probe conversations and briefings
+- `llama-3.3-70b` → Groq Llama 3.3 70B — used for task selection, session summaries, detection calls
+
+**Public interface unchanged:** all callers (`probe.py`, `briefing.py`, `listener.py`) continue calling `claude.complete()` / `claude.complete_with_history()` with the same signatures.
+
+---
+
 ## Next Steps
 
 Ordered by value vs. effort. None of these are committed — just the clearest candidates.
@@ -434,10 +490,24 @@ Ordered by value vs. effort. None of these are committed — just the clearest c
 
 ### ✅ Phase 4 — M-code pending message registry — complete 20 May 2026
 
+### ✅ Phase 5 — Daemon Architecture — complete 20 May 2026
+
+### Phase 6 — Memory Pruning (planned, separate session)
+
+Implement a two-tier memory model before session volume causes token/cost pressure:
+1. **Working memory** — last 3–5 exchanges per task (passed to probe prompt as-is)
+2. **Synthesized long-term memory** — nightly Claude (Haiku) run that compresses raw session transcripts into "user trait" and "task pattern" notes (e.g. "Jake avoids admin tasks on Fridays")
+
+The synthesized notes replace raw transcripts in `build_context_block()`. Old raw transcripts can be pruned after summarisation. This keeps prompt size bounded while actually improving Claw's contextual reasoning over time.
+
+### Phase 7 — Obsidian Vault Integration (planned, separate session)
+
+Write nightly synthesized memory summaries (from Phase 6) as markdown files into an Obsidian vault. Allows the PM Engine to read the "emotional state" of a project — not just task completion status. Depends on Phase 6 output existing first.
+
 ### MoSCoW backlog
 - **Follow-up escalation (Should)** — if an M-code has been pending >N hours, the next probe references that topic with fresh urgency using the same code. No new state model needed — just check `sent_at` on pending rows.
 - **Sentiment tracking (Could)** — score each session for emotional tone, build a rolling picture; tone calibration becomes more sophisticated
-- **Webhook-based Telegram (Could)** — requires a public HTTPS endpoint (reverse proxy on Unraid); polling is reliable enough for now
+- **Webhook-based Telegram (Could)** — requires a public HTTPS endpoint (reverse proxy on Unraid); daemon polling is reliable enough for now (ADR-008)
 - **Code reuse across unrelated topics (Won't now)** — revisit after follow-up escalation is live
 
 ---

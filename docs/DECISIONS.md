@@ -159,3 +159,60 @@ This mirrors the established approach in the parent `todoist-telegram` project, 
 
 **Consequences:**  
 When Claude reasons about task urgency, prompts must include `section_name` as a key field. The `todoist_client.py` hardcodes the section IDs for Work and Home projects — these are stable and project-specific. If the Todoist structure ever changes, only `todoist_client.py` needs updating.
+
+---
+
+## ADR-008: Single-Process Daemon Replaces Crontab
+
+**Date:** Phase 5  
+**Status:** Accepted
+
+**Context:**  
+The Phase 1–4 architecture ran two separate cron processes: `*/30 orchestrator` and `*/2 listener`. Each process independently called `getUpdates` and tracked the Telegram offset in SQLite. A lock file (`/tmp/claw_probe.lock`) provided mutual exclusion during probe sessions. Two problems emerged:
+
+1. **Offset conflict risk** — if the orchestrator triggered a probe that ran long (or if cron timing overlapped), both processes could call `getUpdates` simultaneously, one stealing the other's offset and silently dropping messages.
+2. **Message latency** — the listener processed at most one message per 2-minute cron cycle.
+
+**Options considered:**
+1. Keep cron, add a more robust lock (systemd `.service` with `RemainAfterExit`, or a Redis-backed lock)
+2. Collapse into a single daemon process with a background polling thread
+3. Webhook via Cloudflare Tunnel (instant push, no polling at all)
+
+**Decision:** Single-process daemon (option 2).
+
+**Rationale:**  
+A daemon with a background polling thread eliminates the offset conflict entirely — there is exactly one `getUpdates` consumer at all times. The polling thread feeds a `queue.Queue`; the probe reads replies from the same queue, so no lock file is needed. This approach requires no new infrastructure (unlike webhooks, which need a reverse proxy and external tunnel). APScheduler was evaluated but rejected — a simple time-based check in the main loop is sufficient for a 30-minute interval and avoids an additional dependency.
+
+Webhook-based Telegram remains in the MoSCoW "Could" backlog. It would reduce idle compute and provide instant delivery, but requires a Cloudflare Tunnel or OPNsense port forwarding rule. The polling daemon is reliable enough for a single-user bot.
+
+**Consequences:**  
+- `claw/main.py` is the new entrypoint; Docker `CMD` changed to `python -m claw.main`
+- `docker/crontab` removed
+- `run_probe()`, `run_orchestrator()`, and `listener._handle_probe()` accept an optional `reply_queue` parameter; all script-mode paths continue to work without it
+- Lock file (`PROBE_LOCK_FILE`) removed from `probe.py` and `listener.py`
+
+---
+
+## ADR-009: Route All AI Calls Through LiteLLM Proxy
+
+**Date:** May 2026  
+**Status:** Accepted
+
+**Context:**  
+Claw's `claude_client.py` originally called the Anthropic API directly using the `anthropic` Python library. This meant `ANTHROPIC_API_KEY` lived in Claw's `.env`. The user runs a LiteLLM proxy at `192.168.1.100:4000` that centralises all API credentials and supports model-level routing — the same proxy already used for Open WebUI and other tools.
+
+**Decision:** Replace direct Anthropic calls with LiteLLM via the OpenAI-compatible `/v1/chat/completions` endpoint. All AI calls go through the proxy. `ANTHROPIC_API_KEY` is removed from Claw's environment.
+
+**Two-tier model split (unchanged from Phase 1, only aliases updated):**
+- **Powerful (probe, briefing):** `claude-sonnet-4.6` → LiteLLM routes to `anthropic/claude-sonnet-4-6`
+- **Cheap (selection, summaries, detection):** `llama-3.3-70b` → LiteLLM routes to Groq Llama 3.3 70B
+
+**Rationale:**  
+Centralising key management in LiteLLM means Claw never holds an Anthropic key. Model swaps (e.g. cheap model → gemini-3.1-flash-lite) require only a `config.yaml` change, not a code change. The `openai` Python library's OpenAI-compatible interface is a clean drop-in for the `anthropic` library at this level of usage (text completions, no vision, no streaming).
+
+**Consequences:**  
+- `claude_client.py` uses `openai.OpenAI(base_url=..., api_key=...)` instead of `anthropic.Anthropic(...)`
+- System prompt moves from Anthropic's separate `system=` param to `{"role": "system", "content": ...}` as the first message (standard OpenAI format)
+- Response text: `response.choices[0].message.content` instead of `response.content[0].text`
+- `LITELLM_API_KEY` added to `.env`; `ANTHROPIC_API_KEY` removed
+- `config.yaml` gains `litellm.base_url`; `LITELLM_BASE_URL` env var overrides it if set

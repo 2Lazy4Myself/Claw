@@ -42,14 +42,21 @@ memory:
   # How many recent sessions to summarise for context.
   recent_sessions_to_include: 5
 
+# ─── LiteLLM ─────────────────────────────────────────────────────────────────
+litellm:
+  # Base URL of the LiteLLM proxy. All AI calls are routed through here.
+  # API key is read from LITELLM_API_KEY in .env.
+  base_url: "http://192.168.1.100:4000"
+
 # ─── Claude ──────────────────────────────────────────────────────────────────
 claude:
   # Model for briefing and probe conversations — where tone and empathy matter.
-  model: "claude-sonnet-4-6"
+  # This alias is configured in LiteLLM and routes to Anthropic claude-sonnet-4-6.
+  model: "claude-opus-4.7"
 
   # Model for task selection and session summarisation — structured output, no creativity needed.
-  # Haiku is a fraction of the cost and perfectly capable for JSON/summary tasks.
-  selection_model: "claude-haiku-4-5-20251001"
+  # gemini-3.1-flash routes to google/gemini-2.5-flash — fast and cheap ($0.15/$0.60 per MTok).
+  selection_model: "gemini-3.1-flash"
 
   # Max tokens for briefing responses. Briefings should be concise.
   briefing_max_tokens: 400
