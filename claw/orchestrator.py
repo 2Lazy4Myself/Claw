@@ -15,6 +15,7 @@ Decision logic:
 
 from __future__ import annotations
 import logging
+import queue
 import sys
 from datetime import datetime, timezone, date as _date, time as _time
 from typing import Optional
@@ -38,9 +39,11 @@ def run_orchestrator(
     claude: ClaudeClient,
     telegram: TelegramClient,
     config: dict,
+    reply_queue: Optional[queue.Queue] = None,
 ) -> None:
     """
     Core orchestration logic. All dependencies injected for testability.
+    reply_queue is passed through to run_probe() for daemon-mode reply routing.
     """
     tz = ZoneInfo(config["schedule"]["timezone"])
     now_utc = datetime.now(timezone.utc)
@@ -63,7 +66,7 @@ def run_orchestrator(
         return
 
     logger.info("Active window, gap clear — running probe")
-    run_probe(todoist, memory, claude, telegram, config)
+    run_probe(todoist, memory, claude, telegram, config, reply_queue)
 
 
 # ─── Pure decision functions ──────────────────────────────────────────────────

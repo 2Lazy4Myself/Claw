@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import queue
 import time
 from typing import Optional
 import requests
@@ -77,19 +78,39 @@ class TelegramClient:
         except Exception as e:
             logger.error(f"Failed to send Telegram error alert: {e}")
 
-    def wait_for_reply(self, timeout_seconds: int = 300) -> Optional[str]:
+    def wait_for_reply(
+        self,
+        timeout_seconds: int = 300,
+        reply_queue: Optional[queue.Queue] = None,
+    ) -> Optional[str]:
         """
-        Polls for a reply from the allowed user within the timeout window.
+        Waits for a reply from the allowed user within the timeout window.
+
+        When reply_queue is provided (daemon mode), reads from the shared queue
+        that the background polling thread fills. When None (script/test mode),
+        falls back to direct long-polling against the Telegram API.
 
         Returns the user's message text, or None if no reply arrived in time.
-        Only accepts messages from allowed_user_id. Ignores all others.
-
-        This is a blocking call. Only call it after sending a message that
-        expects a reply (i.e. during a probe session).
-
-        Uses long-polling: getUpdates with a server-side timeout so we don't
-        hammer the API. Tracks offset to avoid replaying old messages.
         """
+        if reply_queue is not None:
+            deadline = time.monotonic() + timeout_seconds
+            while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                try:
+                    update = reply_queue.get(timeout=min(remaining, 1.0))
+                except queue.Empty:
+                    continue
+                msg = update.get("message") or update.get("edited_message")
+                if not msg:
+                    continue
+                if msg.get("from", {}).get("id") != self._allowed_user_id:
+                    continue
+                text = msg.get("text", "")
+                if text:
+                    return text
+            return None
+
+        # Direct long-poll path (script / test mode)
         deadline = time.monotonic() + timeout_seconds
         offset: Optional[int] = None
 

@@ -1,2 +1,0 @@
-*/30 * * * * cd /app && python3 -m claw.orchestrator >> /logs/orchestrator.log 2>&1
-*/2 * * * * cd /app && python3 -m claw.listener >> /logs/listener.log 2>&1

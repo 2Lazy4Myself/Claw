@@ -20,9 +20,10 @@ manage snooze independently because it lacks the task-conversation context.
 from __future__ import annotations
 import json
 import logging
-import os
+import queue
 import re
 import sys
+from typing import Optional
 
 from claw.config import load_config
 from claw.memory import MemoryStore, build_context_block
@@ -31,12 +32,35 @@ from claw.telegram_client import TelegramClient
 from claw.todoist_client import TodoistClient, from_env as todoist_from_env
 from claw import prompts
 
-PROBE_LOCK_FILE = "/tmp/claw_probe.lock"
-
 # Matches any M-code (M1–M9) in a message — used to detect code replies
 _CODE_RE = re.compile(r'\b(M\d)\b', re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
+
+
+def handle_update(
+    update: dict,
+    todoist: TodoistClient,
+    memory: MemoryStore,
+    claude: ClaudeClient,
+    telegram: TelegramClient,
+    config: dict,
+    reply_queue: Optional[queue.Queue] = None,
+) -> None:
+    """
+    Process one Telegram update dict. Called by the daemon dispatch loop.
+    Filters for valid text messages from the allowed user, then routes.
+    """
+    msg = update.get("message") or update.get("edited_message")
+    if not msg:
+        return
+    if msg.get("from", {}).get("id") != config["telegram"]["allowed_user_id"]:
+        return
+    text = (msg.get("text") or "").strip()
+    if not text:
+        return
+    logger.info(f"Listener handling message: {text[:60]!r}")
+    _handle_message(text, todoist, memory, claude, telegram, config, reply_queue)
 
 
 def run_listener(
@@ -46,10 +70,10 @@ def run_listener(
     telegram: TelegramClient,
     config: dict,
 ) -> None:
-    if os.path.exists(PROBE_LOCK_FILE):
-        logger.info("Probe is active — listener exiting")
-        return
-
+    """
+    Fetch-and-dispatch loop for script/manual use. Manages its own offset.
+    In the daemon, main.py handles polling and calls handle_update() directly.
+    """
     offset = memory.get_listener_offset()
     updates = telegram.get_updates(offset=offset, timeout=0)
 
@@ -71,7 +95,7 @@ def run_listener(
 
         logger.info(f"Listener handling message: {text[:60]!r}")
         _handle_message(text, todoist, memory, claude, telegram, config)
-        break  # one message per cron run
+        break  # one message per script run
 
     if consumed_offset is not None:
         memory.set_listener_offset(consumed_offset)
@@ -98,6 +122,7 @@ def _handle_message(
     claude: ClaudeClient,
     telegram: TelegramClient,
     config: dict,
+    reply_queue: Optional[queue.Queue] = None,
 ) -> None:
     # Fast-path: M-code replies bypass Claude intent classification
     code_replies = _parse_code_replies(text)
@@ -119,7 +144,7 @@ def _handle_message(
     if intent == "briefing":
         _handle_briefing(todoist, memory, claude, telegram, config)
     elif intent == "probe":
-        _handle_probe(todoist, memory, claude, telegram, config)
+        _handle_probe(todoist, memory, claude, telegram, config, reply_queue)
     else:
         _handle_general(text, memory, claude, telegram, config)
 
@@ -152,10 +177,11 @@ def _handle_probe(
     claude: ClaudeClient,
     telegram: TelegramClient,
     config: dict,
+    reply_queue: Optional[queue.Queue] = None,
 ) -> None:
     from claw.probe import run_probe
     try:
-        run_probe(todoist, memory, claude, telegram, config)
+        run_probe(todoist, memory, claude, telegram, config, reply_queue)
     except Exception as e:
         logger.error(f"On-demand probe failed: {e}", exc_info=True)
         telegram.send_error(f"Probe failed: {e}")

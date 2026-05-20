@@ -16,13 +16,11 @@ Flow:
 from __future__ import annotations
 import json
 import logging
-import os
+import queue
 import sys
 import uuid
 from datetime import datetime, date as _date, time as _time, timezone
 from typing import Optional
-
-PROBE_LOCK_FILE = "/tmp/claw_probe.lock"
 
 from claw.claude_client import ClaudeClient
 from claw.config import load_config
@@ -46,26 +44,16 @@ def run_probe(
     claude: ClaudeClient,
     telegram: TelegramClient,
     config: dict,
+    reply_queue: Optional[queue.Queue] = None,
 ) -> None:
     """
     Runs one complete probe cycle. All dependencies injected for testability.
+
+    reply_queue: shared queue fed by the daemon's polling thread. When provided,
+    wait_for_reply reads from it instead of calling the Telegram API directly.
     """
     logger.info("Starting probe run")
-
-    # Signal to the listener that the probe owns Telegram polling right now
-    try:
-        with open(PROBE_LOCK_FILE, "w") as f:
-            f.write(str(os.getpid()))
-    except OSError as e:
-        logger.warning(f"Could not create probe lock file: {e}")
-
-    try:
-        _run_probe_inner(todoist, memory, claude, telegram, config)
-    finally:
-        try:
-            os.unlink(PROBE_LOCK_FILE)
-        except FileNotFoundError:
-            pass
+    _run_probe_inner(todoist, memory, claude, telegram, config, reply_queue)
 
 
 def _run_probe_inner(
@@ -74,6 +62,7 @@ def _run_probe_inner(
     claude: ClaudeClient,
     telegram: TelegramClient,
     config: dict,
+    reply_queue: Optional[queue.Queue] = None,
 ) -> None:
     cap = config["schedule"].get("max_pending_messages", 3)
     if memory.pending_count() >= cap:
@@ -143,6 +132,7 @@ def _run_probe_inner(
         outcome = _probe_one_task(
             selected_task, todoist, memory, claude, telegram, config,
             chain_index=chain_index, last_discussed=last_discussed, goals=goals, cap=cap,
+            reply_queue=reply_queue,
         )
 
         discussed_ids.add(selected_task.id)
@@ -164,6 +154,7 @@ def _probe_one_task(
     last_discussed: Optional[Task],
     goals: Optional[list[GoalRecord]] = None,
     cap: int = 3,
+    reply_queue: Optional[queue.Queue] = None,
 ) -> str:
     """
     Runs one complete probe conversation for a single task.
@@ -209,7 +200,7 @@ def _probe_one_task(
         {"role": "user", "content": opening_user_msg},
         {"role": "assistant", "content": opening},
     ]
-    outcome = _run_conversation_loop(task, conversation_history, memory, claude, telegram, config)
+    outcome = _run_conversation_loop(task, conversation_history, memory, claude, telegram, config, reply_queue)
     logger.info(f"Probe outcome: {outcome}")
 
     # If the user engaged, the slot is answered — close it so the next cron can top up
@@ -317,6 +308,7 @@ def _run_conversation_loop(
     claude: ClaudeClient,
     telegram: TelegramClient,
     config: dict,
+    reply_queue: Optional[queue.Queue] = None,
 ) -> str:
     """
     Handles back-and-forth after the opening message.
@@ -326,7 +318,7 @@ def _run_conversation_loop(
     timeout = config["telegram"]["reply_timeout_seconds"]
 
     for turn in range(MAX_PROBE_TURNS):
-        reply = telegram.wait_for_reply(timeout)
+        reply = telegram.wait_for_reply(timeout, reply_queue)
         if reply is None:
             return "no_reply"
 

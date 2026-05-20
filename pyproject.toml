@@ -8,15 +8,18 @@ version = "0.1.0"
 description = "Emotionally intelligent personal assistant"
 requires-python = ">=3.11"
 dependencies = [
-    "anthropic>=0.25.0",
+    "openai>=1.0.0",
     "requests>=2.31.0",
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0",
 ]
 
 [project.scripts]
+claw = "claw.main:main"
 claw-briefing = "claw.briefing:main"
 claw-probe = "claw.probe:main"
+claw-orchestrator = "claw.orchestrator:main"
+claw-listener = "claw.listener:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
