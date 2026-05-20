@@ -348,17 +348,71 @@ Status: Diet consistent, exercise still patchy
 
 ---
 
-## Phase 4 — Sentiment Tracking
+## Phase 4 — M-code Pending Message Registry
 
-**Goal:** Claw builds a lightweight emotional model of you over time — not clinical, just aware. If you've been flat for a week, it might say something different than if you've been energised.
+**Goal:** When the user is unavailable for an extended period (commuting, etc.), unanswered probe messages pile up with no way to reply later without losing context. Introduce a lightweight shorthand: each outbound probe gets an M-code (`M1`, `M2`, …) the user can reply to by name — individually or in bulk — at any point.
 
-**Status:** 🔲 Not started
+**Status:** ✅ Complete — 20 May 2026
 
-**Rough scope:**
-- Session sentiment scored by Claude at end of each interaction (1-5 scale + notes)
-- Sentiment history stored in memory
-- System prompt gains rolling sentiment summary as context
-- Tone calibration becomes more sophisticated
+**What was built:**
+
+**State layer (`memory.py`):**
+- `pending_messages` SQLite table — one row per outbound probe: `code`, `text`, `type`, `sent_at`, `status` (`pending`|`answered`), `answered_at`
+- `assign_message_code(text, type, cap) -> Optional[str]` — finds the lowest free M1–M9 slot, inserts the row, returns the code; returns `None` if all slots up to `cap` are taken
+- `close_message_code(code) -> Optional[dict]` — marks a code `answered`, returns the row (or `None` if not found)
+- `pending_count() -> int` — count of pending rows
+- `get_pending_messages() -> list[dict]` — all pending rows ordered by code
+
+**Code assignment in `probe.py`:**
+- Cap check at the top of `_run_probe_inner` — if `pending_count() >= cap`, skip probe silently (briefings are never gated)
+- Before sending each probe message, `assign_message_code()` is called; message is prefixed: `"M2: Did you do weights today?"`
+- Race-guard inside `_probe_one_task` — cap may fill between the outer check and the send; `assign_message_code` returns `None` in that case and the task is skipped
+- If the user responds during the live poll window, `close_message_code()` is called so the slot is freed immediately
+
+**Reply handling in `listener.py`:**
+- Module-level regex `_CODE_RE = re.compile(r'\b(M\d)\b', re.IGNORECASE)` pre-filters M-code messages
+- `_parse_code_replies(text)` — single pass using match objects; supports multi-code replies in one message: `"M2 - yeah, M1 - No"` → `[("M2", "yeah"), ("M1", "No")]`
+- Fast-path in `_handle_message` — M-code replies bypass Claude intent classification entirely (cheaper, faster)
+- `_handle_code_replies` — closes each code, sends a combined ack: `"Got it — M1, M2 closed."`; separately flags any unknown codes
+
+**One-message-per-cron-run:**
+- Listener processes the first valid message then breaks; remaining updates are deferred to the next 2-min cron cycle
+- `consumed_offset` tracked locally; written to SQLite once after the loop (not per-update)
+
+**Top-up (implicit, no new code):**
+- When a slot is freed, the next cron cycle sees `pending_count < cap` and sends a new probe naturally — "bang the drum" behaviour with no special orchestration
+
+**Config addition:**
+```yaml
+schedule:
+  max_pending_messages: 3   # briefings bypass this cap
+```
+
+**Tidy (post-build `/simplify` review):**
+- `cap` computed once in `_run_probe_inner` and passed to `_probe_one_task` — eliminated a double config read
+- Offset write moved out of the per-update loop — was writing to SQLite on every update, including filtered/invalid ones
+- `_parse_code_replies` collapsed from two passes to one using match object positions directly
+
+**Key decisions:**
+- Briefings bypass the cap entirely — they never call `pending_count()`
+- M-codes are closed immediately when the user replies during a live probe session (not just by the listener)
+- Follow-up escalation (reuse same code after silence timeout) deferred to MoSCoW "Should" backlog
+- Code reuse across unrelated topics deferred to MoSCoW "Could/Won't now" — revisit after escalation is live
+
+---
+
+## Maintenance — 20 May 2026
+
+**Todoist retry logic:**
+- `todoist_client.py` had no retry on transient server errors — a single 502 or 503 immediately fired a Telegram error alert
+- Added `_request_with_retry(method, url, **kwargs)` — up to 2 retries with exponential backoff (1s, 2s) on 502/503 and connection errors
+- All HTTP call sites (`_fetch_all`, `close_task`, `update_task_description`, `update_goal_current`) now go through it
+- Added `import time`, `import logging`, module-level constants `_RETRYABLE_STATUS = {502, 503}`, `_MAX_RETRIES = 2`
+
+**Integration test fixes:**
+- Hardcoded model `claude-sonnet-4-20250514` updated to `claude-sonnet-4-6` (old ID returns 404)
+- `TASK_SELECTION_USER_TEMPLATE` format call missing `goal_context` and `previous_topic` (added in Phase 3) — added both
+- `strip_json_fences()` added to the task selection test assertion — Haiku sometimes wraps JSON in fences even in integration tests
 
 ---
 
@@ -378,9 +432,13 @@ Ordered by value vs. effort. None of these are committed — just the clearest c
 
 ### ✅ Phase 3 — Goal layer — complete 19 May 2026
 
-### Lower priority
-- **Sentiment tracking (Phase 4)** — score each session for emotional tone, build a rolling picture
-- **Webhook-based Telegram** — requires a public HTTPS endpoint (reverse proxy on Unraid)
+### ✅ Phase 4 — M-code pending message registry — complete 20 May 2026
+
+### MoSCoW backlog
+- **Follow-up escalation (Should)** — if an M-code has been pending >N hours, the next probe references that topic with fresh urgency using the same code. No new state model needed — just check `sent_at` on pending rows.
+- **Sentiment tracking (Could)** — score each session for emotional tone, build a rolling picture; tone calibration becomes more sophisticated
+- **Webhook-based Telegram (Could)** — requires a public HTTPS endpoint (reverse proxy on Unraid); polling is reliable enough for now
+- **Code reuse across unrelated topics (Won't now)** — revisit after follow-up escalation is live
 
 ---
 
@@ -392,3 +450,6 @@ Ordered by value vs. effort. None of these are committed — just the clearest c
 - **Log in the source, not just the DB**: Writing the habit log back to Todoist description keeps the history where the habit lives. It's human-readable, editable, and Claude can see it without a separate DB query.
 - **Post-conversation detection is cleaner than in-loop**: Detecting completion intent after the conversation ends (full transcript available) is simpler and more reliable than trying to detect it turn-by-turn during the loop.
 - **Fuzzy subtask matching beats exact**: Claude paraphrases subtask names when reporting completion. Partial match fallback catches "got the bands" → "Find Resistance Bands" without needing the model to be precise.
+- **M-codes and the cap**: The pending message cap is best enforced at the point of sending (inside `_probe_one_task`), not only at the outer gate. Two checks cost almost nothing and prevent a race where the cap fills between the orchestrator check and the actual send.
+- **One message per cron, not one per update**: Processing one message per listener run and writing the offset once at the end (not per-update) avoids partial state where the offset advances past a message that wasn't actually handled.
+- **Retry transient errors, don't alert on them**: 502/503 from Todoist are infrastructure blips. Retrying twice with backoff costs a few seconds and silences what would otherwise be noisy error alerts in Telegram. Save `send_error` for errors that persist after retries.

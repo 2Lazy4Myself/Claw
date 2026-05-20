@@ -103,4 +103,22 @@ A few principles that should survive any prompt revision:
 
 ## Changelog
 
-*Prompt changes appended here as they happen.*
+### Phase 1.9 (16 May 2026)
+- `LISTENER_INTENT_SYSTEM` — added `"probe"` intent: user can trigger an on-demand probe session by saying "probe me", "check in with me", "what should I work on?". Listener routes to `run_probe()` directly.
+
+### Phase 2 (19 May 2026)
+- `BRIEFING_SYSTEM` — restructured to lead with goals, not tasks. The most active goal and the task that advances it are the opening frame. QUIET goals (7+ days no activity) surface prominently. Secondary tasks get one collective line.
+- `BRIEFING_USER_TEMPLATE` — `{goal_context}` moved to the top so Claude reads goals before tasks.
+- `PROBE_SYSTEM` — goal is now the opening frame: "You're working toward X. This task is your current path there." Gap framing (current → target) promoted to a primary instruction.
+- `PROBE_USER_TEMPLATE` — `{goal_line}` moved before task details.
+- `TASK_SELECTION_SYSTEM` — goal weighting changed from tiebreaker to active preference: "Explicitly prefer goal-linked tasks. Only fall back to non-goal tasks if none are eligible." QUIET goal preference and 90-day deadline urgency weighting added.
+- `PROBE_FOLLOWUP_SYSTEM` — added: acknowledge concrete goal progress in follow-ups (one genuine line; silence is also fine).
+
+### Phase 3 (19 May 2026)
+- `BRIEFING_SYSTEM` — QUIET goal flag (`← QUIET`) explained; concrete gap framing with current → target values.
+- `TASK_SELECTION_SYSTEM` — deadline urgency: weight tasks from goals with `By` within 90 days higher.
+- `GOAL_UPDATE_DETECTION_SYSTEM` — new prompt. Detects explicit measurements from probe conversations ("I weighed 107kg") and triggers a write-back to the goal's `Current:` field. Strict: no inference, no estimates, no vague language.
+
+### Phase 4 (20 May 2026)
+- `LISTENER_INTENT_SYSTEM` — no change to the prompt itself; M-code replies now bypass it entirely via a regex fast-path before the Claude call.
+- `TASK_SELECTION_USER_TEMPLATE` — `{goal_context}` and `{previous_topic}` placeholders added (these were wired up in Phase 2/3 but the template reference hadn't been noted here).

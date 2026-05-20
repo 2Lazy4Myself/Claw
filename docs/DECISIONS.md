@@ -108,6 +108,38 @@ Claw and `todoist-telegram` must not run simultaneously in listener mode. During
 
 ---
 
+## ADR-007: M-code Pending Message Registry
+
+**Date:** Phase 4 — May 2026
+**Status:** Accepted
+
+**Context:**
+When the user is unavailable for an extended period, Claw either piles up unanswered messages or goes silent. There is no shorthand for replying to a specific message on return, and no mechanism to limit how many unresolved questions accumulate.
+
+**Options considered:**
+1. Queue all pending probes; replay them when the user is available — complex state, confusing UX
+2. Just limit total messages (cap only, no reply tracking) — limits damage but provides no closure path
+3. M-code registry — tag each probe with a code the user can reference when replying; cap the number of open codes
+
+**Decision:** M-code registry (option 3).
+
+**Rationale:**
+The user wanted to be able to reply "M2 - yeah, M1 - No" in a single message hours later. That requires each probe to carry a stable short identifier. The registry tracks which codes are open, so Claw knows when a question has been answered. The cap prevents accumulation: if all slots are full, Claw goes quiet and tops up naturally when a slot is freed by the user responding.
+
+Briefings bypass the cap entirely — they are a morning overview, not a question, and suppressing them during a backlog of unanswered probes would be the wrong trade-off.
+
+**Key design choices:**
+- Codes M1–M9 assigned in order; lowest free slot wins
+- Cap is configurable (`schedule.max_pending_messages`, default 3)
+- M-code replies detected by regex before Claude intent classification — faster and cheaper for a clear pattern
+- Multi-code replies in one message supported: `"M2 - yeah, M1 - No"` parsed as two separate close actions
+- Follow-up escalation (reusing a code for the same topic after silence) is deferred to the MoSCoW "Should" backlog
+
+**Consequences:**
+The listener now manages two concerns: processing inbound messages and closing pending M-codes. These are kept separate — the M-code fast-path runs before intent classification and returns early, so there's no interleaving.
+
+---
+
 ## ADR-006: Sections as the Temporal Signal in Todoist
 
 **Date:** May 2026  
