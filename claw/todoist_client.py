@@ -15,8 +15,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from typing import Optional
+import logging
 import os
+import time
 import requests
+
+logger = logging.getLogger(__name__)
+
+_RETRYABLE_STATUS = {502, 503}
+_MAX_RETRIES = 2
 
 
 # ─── Project & section definitions ───────────────────────────────────────────
@@ -178,13 +185,7 @@ class TodoistClient:
 
     def close_task(self, task_id: str) -> None:
         """Marks a task complete in Todoist. Works for tasks and subtasks."""
-        try:
-            resp = self._session.post(
-                f"{self.BASE_URL}/tasks/{task_id}/close", timeout=10
-            )
-            resp.raise_for_status()
-        except requests.RequestException as exc:
-            raise TodoistAPIError(str(exc)) from exc
+        self._request_with_retry("POST", f"{self.BASE_URL}/tasks/{task_id}/close")
 
     def get_subtasks(self, task_id: str) -> list[Task]:
         """Returns all non-completed subtasks of a given task."""
@@ -201,15 +202,10 @@ class TodoistClient:
         Replaces a task's description via the Todoist API.
         Used to append timestamped habit log entries after a probe conversation.
         """
-        try:
-            resp = self._session.post(
-                f"{self.BASE_URL}/tasks/{task_id}",
-                json={"description": new_description},
-                timeout=10,
-            )
-            resp.raise_for_status()
-        except requests.RequestException as exc:
-            raise TodoistAPIError(str(exc)) from exc
+        self._request_with_retry(
+            "POST", f"{self.BASE_URL}/tasks/{task_id}",
+            json={"description": new_description},
+        )
 
     def get_waiting_for(self, project_key: str) -> list[Task]:
         """Tasks in the Waiting For section."""
@@ -254,13 +250,8 @@ class TodoistClient:
         Updates the 'Current:' field in a goal task's description.
         Replaces an existing Current: line or appends one if absent.
         """
-        try:
-            resp = self._session.get(f"{self.BASE_URL}/tasks/{task_id}", timeout=10)
-            resp.raise_for_status()
-            current_desc = resp.json().get("description", "") or ""
-        except requests.RequestException as exc:
-            raise TodoistAPIError(str(exc)) from exc
-
+        resp = self._request_with_retry("GET", f"{self.BASE_URL}/tasks/{task_id}")
+        current_desc = resp.json().get("description", "") or ""
         new_desc = _update_description_field(current_desc, "Current", value)
         self.update_task_description(task_id, new_desc)
 
@@ -285,17 +276,37 @@ class TodoistClient:
         cursor: Optional[str] = None
         while True:
             p = {**params, **({"cursor": cursor} if cursor else {})}
-            try:
-                resp = self._session.get(url, params=p, timeout=10)
-                resp.raise_for_status()
-            except requests.RequestException as exc:
-                raise TodoistAPIError(str(exc)) from exc
+            resp = self._request_with_retry("GET", url, params=p)
             data = resp.json()
             results.extend(data.get("results", data) if isinstance(data, dict) else data)
             cursor = data.get("next_cursor") if isinstance(data, dict) else None
             if not cursor:
                 break
         return results
+
+    def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
+        """HTTP request with exponential backoff on transient server errors."""
+        last_exc: Optional[Exception] = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                resp = self._session.request(method, url, timeout=10, **kwargs)
+                if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
+                    logger.warning(
+                        f"Todoist {resp.status_code} on {method} {url} "
+                        f"— retry {attempt + 1}/{_MAX_RETRIES}"
+                    )
+                    time.sleep(2 ** attempt)
+                    last_exc = TodoistAPIError(f"HTTP {resp.status_code}")
+                    continue
+                resp.raise_for_status()
+                return resp
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt < _MAX_RETRIES:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise TodoistAPIError(str(exc)) from exc
+        raise TodoistAPIError(str(last_exc))
 
     def _parse(self, raw: dict, project_key: str, section_name: str, today: date) -> Task:
         due = raw.get("due")

@@ -53,7 +53,7 @@ class TestTodoistIntegration:
 class TestClaudeIntegration:
     def test_single_turn_completion_returns_string(self):
         from claw.claude_client import ClaudeClient
-        config = {"claude": {"model": "claude-sonnet-4-20250514", "selection_model": "claude-haiku-4-5-20251001"}}
+        config = {"claude": {"model": "claude-sonnet-4-6", "selection_model": "claude-haiku-4-5-20251001"}}
         client = ClaudeClient.from_env(config)
         result = client.complete(
             system="You are a helpful assistant. Reply in 5 words or fewer.",
@@ -69,7 +69,7 @@ class TestClaudeIntegration:
         from claw.claude_client import ClaudeClient
         from claw import prompts
 
-        config = {"claude": {"model": "claude-sonnet-4-20250514", "selection_model": "claude-haiku-4-5-20251001"}}
+        config = {"claude": {"model": "claude-sonnet-4-6", "selection_model": "claude-haiku-4-5-20251001"}}
         client = ClaudeClient.from_env(config)
 
         result = client.complete(
@@ -77,13 +77,15 @@ class TestClaudeIntegration:
             user=prompts.TASK_SELECTION_USER_TEMPLATE.format(
                 task_list_with_memory=(
                     "- task_id: abc123, content: 'Update website copy', "
-                    "overdue: 5 days, last_probed: 7 days ago, notes: 'User said they'd do it'"
-                )
+                    "overdue: 5 days, last_probed: 7 days ago, notes: 'User said they\\'d do it'"
+                ),
+                goal_context="No goals configured.",
+                previous_topic="None",
             ),
             max_tokens=150,
             model=config["claude"]["selection_model"],
         )
-        parsed = json.loads(result)
+        parsed = json.loads(prompts.strip_json_fences(result))
         assert "task_id" in parsed
         assert "reason" in parsed
 
