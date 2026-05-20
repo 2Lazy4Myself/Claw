@@ -207,7 +207,7 @@ class MemoryStore:
                 code = f"M{i}"
                 if code not in pending_codes:
                     conn.execute(
-                        "INSERT INTO pending_messages (code, text, type, sent_at) "
+                        "INSERT OR REPLACE INTO pending_messages (code, text, type, sent_at) "
                         "VALUES (?, ?, ?, ?)",
                         (code, text, msg_type, _dt_to_str(datetime.now(timezone.utc))),
                     )

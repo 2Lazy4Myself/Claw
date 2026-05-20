@@ -3,6 +3,7 @@ FROM python:3.11-alpine
 RUN apk add --no-cache tzdata
 
 ENV TZ=Europe/London
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
