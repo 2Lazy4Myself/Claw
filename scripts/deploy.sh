@@ -9,18 +9,21 @@
 # Flow:
 #   1. git pull (fast-forward only)
 #   2. run unit tests in a throwaway container (no host Python needed)
-#   3. docker build the image
-#   4. smoke-check imports inside the built image
-#   5. verify the built image's claw/*.py checksums vs the running container
-#   6. swap the container, re-attaching the existing data/config/.env/logs mounts
+#   3. docker build a CANDIDATE image (claw:candidate — never touches claw:latest)
+#   4. smoke-check imports inside the candidate image
+#   5. verify the candidate's claw/*.py checksums vs the running container
+#   6. promote candidate -> claw:latest and swap the container, re-attaching the
+#      existing data/config/.env/logs mounts
 #
-# Pass --verify-only to stop after step 5 (build + verify, no swap, no downtime).
+# Pass --verify-only to stop after step 5: builds + verifies the candidate with
+# zero downtime — the running container and claw:latest are left untouched.
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPDATA="/mnt/zpool/appdata/claw"   # holds the runtime mounts (data, logs, .env, config.yaml)
 IMAGE="claw:latest"
+CANDIDATE="claw:candidate"
 CONTAINER="claw"
 
 VERIFY_ONLY=0
@@ -35,21 +38,21 @@ echo "[deploy] 2/6 running unit tests..."
 docker run --rm -v "$REPO_DIR":/app -w /app python:3.11-alpine \
   sh -c "pip install -q -r requirements.txt && python -m pytest -m 'not integration' -q"
 
-echo "[deploy] 3/6 building image..."
-docker build -t "$IMAGE" .
+echo "[deploy] 3/6 building candidate image ($CANDIDATE)..."
+docker build -t "$CANDIDATE" .
 
 echo "[deploy] 4/6 smoke-checking imports..."
-docker run --rm "$IMAGE" \
+docker run --rm "$CANDIDATE" \
   python -c "import claw.main, claw.orchestrator, claw.briefing, claw.probe, claw.listener, claw.nightly; print('imports ok')"
 
 echo "[deploy] 5/6 verifying module checksums vs running container..."
 if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
-  NEW="$(docker run --rm "$IMAGE" sh -c 'cd /app && sha256sum claw/*.py | sort')"
+  NEW="$(docker run --rm "$CANDIDATE" sh -c 'cd /app && sha256sum claw/*.py | sort')"
   CUR="$(docker exec "$CONTAINER" sh -c 'cd /app && sha256sum claw/*.py | sort')"
   if [ "$NEW" = "$CUR" ]; then
-    echo "[deploy]   match — built image is identical to the running container."
+    echo "[deploy]   match — candidate is identical to the running container."
   else
-    echo "[deploy]   built image differs from the running container (expected for a real deploy):"
+    echo "[deploy]   candidate differs from the running container (expected for a real deploy):"
     diff <(echo "$CUR") <(echo "$NEW") || true
   fi
 else
@@ -57,11 +60,13 @@ else
 fi
 
 if [ "$VERIFY_ONLY" -eq 1 ]; then
-  echo "[deploy] --verify-only set: stopping before the swap. Built '$IMAGE' is ready."
+  echo "[deploy] --verify-only set: stopping before the swap. '$CANDIDATE' is built and verified;"
+  echo "[deploy] the running container and '$IMAGE' are untouched."
   exit 0
 fi
 
-echo "[deploy] 6/6 swapping container..."
+echo "[deploy] 6/6 promoting candidate and swapping container..."
+docker tag "$CANDIDATE" "$IMAGE"
 docker stop "$CONTAINER" 2>/dev/null || true
 docker rm "$CONTAINER" 2>/dev/null || true
 docker run -d \
