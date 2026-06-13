@@ -472,6 +472,31 @@ schedule:
 
 ---
 
+## Programmes, Goals Coaching & Nightly Synthesis — reconciled 13 June 2026
+
+> **Provenance note:** This layer was developed directly on the Unraid server between roughly 20 May and 6 June 2026 (file mtimes) and was never committed — the repo's history stopped at "Fix UNIQUE constraint crash" (`2af5d2e`, 20 May). On 13 June 2026 the live server's `claw/` source was imported on top of `origin/main` as a single reconciliation commit, and this section was written from the code as it actually shipped. Going forward git is the source of truth and deploys run `scripts/deploy.sh` (ADR-010).
+
+**Status:** ✅ Live in production (the `claw` daemon container).
+
+**New modules (none of these existed in git before):**
+
+- `fitness.py` — parses a structured fitness **programme** from a Todoist task description (the description is the single source of truth, no SQLite), tracks compliance, and builds context blocks injected into briefings and probes. Section ID `PROGRAMMES` (`6ghPVc999Mm3Fwxp`) is hardcoded in `todoist_client.py`, alongside new `get_programmes()` and `append_to_task_description()` helpers.
+- `nightly.py` — the nightly synthesis pass (run by the orchestrator after a configured evening time). Three jobs: per-task **context synthesis** (Haiku-class model writes a 2–3 sentence "current state" into `task_memory.context_summary` for tasks with enough probes); **user-profile synthesis** (a rolling trait paragraph from recent session summaries); and **notes pruning** (trim `task_memory.notes` to the most recent entries). This is the implementation of what the roadmap listed as "Phase 6 — Memory Pruning".
+- `synthesis.py` — the pure synthesis helpers used by `nightly.py`; always run on the cheap selection model, never during a live probe/briefing.
+- `watchlist.py` — read-only over the memory store; flags topics (fitness, goals, habits) that have gone silent past a threshold so they can be surfaced proactively.
+- `situation.py` — assembles a "where we are right now" snapshot (programme position + goal progress) so free-form chat has the same context briefings/probes already had, and shares the Todoist fetch so the listener doesn't fetch twice per message.
+- `audit.py` — read-only diagnostic (`python -m claw.audit`) that cross-checks goals, lifestyle habits, and the active fitness programme for conflicts.
+
+**Extensions to existing modules:** `memory.py` gained the `chat_turns`, `user_profile`, and `handled_updates` tables plus `task_memory.context_summary`/`notes`; `probe.py` grew goal-aware framing and the `_format_task_memory(task_memory, task_id, memory)` signature (now pulls recent session summaries); `prompts.py`, `briefing.py`, `listener.py`, `telegram_client.py`, and `orchestrator.py` were extended to weave goals/programme/profile context through the flows.
+
+**Config:** `config.example.yaml` documents the Programmes section and bumps `selection_max_tokens` 150 → 2000 (reasoning models emit a `<think>` block before the JSON, which the cheap model's `<think>`-stripping in `claude_client.py` then removes).
+
+**Reconciliation fixes applied at import:** `requirements.txt` `anthropic` → `openai` and `.env.example` `ANTHROPIC_API_KEY` → `LITELLM_API_KEY` (both were missed by the LiteLLM commit — the Dockerfile already installed `openai`, so the container ran, but `requirements.txt` would have broken a clean install / the deploy test gate). Two `_format_task_memory` unit tests updated for the new signature.
+
+> **Known follow-ups:** `data/claw.db` (the entire accumulated memory + user profile) still has no off-disk backup; the new modules have no unit tests yet; the daemon logs to container stdout, so the server's `/logs/*.log` files are frozen cron-era leftovers.
+
+---
+
 ## Next Steps
 
 Ordered by value vs. effort. None of these are committed — just the clearest candidates.

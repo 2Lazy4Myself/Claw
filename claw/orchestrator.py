@@ -59,6 +59,12 @@ def run_orchestrator(
         run_briefing(todoist, memory, claude, telegram, config)
         return
 
+    if _nightly_window_open(config, now_local) and not _nightly_run_today(memory, today_local):
+        logger.info("Nightly window open — running synthesis")
+        from claw.nightly import run_nightly
+        run_nightly(memory, claude, config)
+        return
+
     minutes = _minutes_since_last_session(memory, now_utc)
     min_gap = config["schedule"]["min_minutes_between_sessions"]
     if minutes is not None and minutes < min_gap:
@@ -91,6 +97,19 @@ def _briefing_sent_today(memory: MemoryStore, today_iso: str) -> bool:
     """True if a briefing session has already been logged today (local date)."""
     last_date = memory.get_last_briefing_date()
     return last_date == today_iso
+
+
+def _nightly_window_open(config: dict, now_local: datetime) -> bool:
+    """True if current local time is in the nightly synthesis window (after configured time, before active_window_end)."""
+    after = _parse_hhmm(config["schedule"].get("nightly_synthesis_after", "20:00"))
+    end = _parse_hhmm(config["schedule"]["active_window_end"])
+    current = now_local.time().replace(second=0, microsecond=0)
+    return after <= current < end
+
+
+def _nightly_run_today(memory: MemoryStore, today_iso: str) -> bool:
+    """True if a nightly synthesis session has already been logged today (local date)."""
+    return memory.get_last_nightly_date() == today_iso
 
 
 def _minutes_since_last_session(memory: MemoryStore, now_utc: datetime) -> Optional[float]:

@@ -16,10 +16,11 @@ from __future__ import annotations
 import logging
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, date as _date, timezone
 
 from claw.claude_client import ClaudeClient
 from claw.config import load_config
+from claw import fitness as fitness_mod
 from claw.goals import get_goals, build_goal_summary
 from claw.memory import MemoryStore, SessionRecord, build_context_block
 from claw.telegram_client import TelegramClient
@@ -72,31 +73,70 @@ def run_briefing(
 
     # 3. Build task list string for prompt
     task_list = _format_tasks_for_prompt(all_tasks, config["behaviour"]["briefing_max_tasks"])
-    habit_summary = _format_habits_for_prompt(habits)
     waiting_summary = _format_waiting_for_prompt(waiting_tasks)
 
     goals = get_goals(goal_tasks)
     goal_context = build_goal_summary(all_tasks + habits + waiting_tasks, goals, memory)
 
-    # 4. Ask Claude for the briefing
+    # 4. Fitness programme context
+    today = _date.today()
+    programme_tasks = todoist.get_programmes()
+    programme = fitness_mod.get_active_programme(programme_tasks)
+    if programme:
+        if fitness_mod.should_advance_week(programme, today):
+            fitness_mod.advance_week(programme, todoist)
+            programme.current_week += 1
+        compliance = fitness_mod.get_week_compliance(programme)
+        fitness_context = fitness_mod.build_fitness_briefing_context(programme, compliance, today)
+        urgency = fitness_mod.compliance_urgency(compliance)
+        # Exclude fitness habits from the generic habit summary — they're covered by fitness_context.
+        # Keeping them in causes Claude to read day-labels like "(Tue)" in habit names as today's date.
+        fitness_labels = set(programme.labels)
+        non_fitness_habits = [h for h in habits if not any(l in fitness_labels for l in h.labels)]
+    else:
+        fitness_context = "(no active fitness programme)"
+        urgency = "normal"
+        non_fitness_habits = habits
+
+    if urgency == "urgent":
+        fitness_urgency_note = (
+            "NOTE: Three or more fitness sessions missed this week. "
+            "Don't try to catch up — adapt and move forward."
+        )
+    elif urgency == "flagged":
+        fitness_urgency_note = (
+            "NOTE: Two fitness sessions missed this week — "
+            "the path back matters more than the gap."
+        )
+    else:
+        fitness_urgency_note = ""
+
+    habit_summary = _format_habits_for_prompt(non_fitness_habits)
+
+    # 5. Ask Claude for the briefing
+    user_profile = memory.get_user_profile()
+    user_profile_block = f"User profile:\n{user_profile}\n\n" if user_profile else ""
     briefing_text = claude.complete(
         system=prompts.get_prompt("BRIEFING_SYSTEM"),
         user=prompts.BRIEFING_USER_TEMPLATE.format(
+            user_profile=user_profile_block,
             task_list=task_list,
             habit_summary=habit_summary,
             waiting_summary=waiting_summary,
             goal_context=goal_context,
             memory_context=memory_context,
+            fitness_context=fitness_context,
+            fitness_urgency_note=fitness_urgency_note,
         ),
         max_tokens=config["claude"]["briefing_max_tokens"],
     )
     logger.info("Received briefing from Claude")
 
-    # 5. Send via Telegram
+    # 6. Send via Telegram
     telegram.send_message(briefing_text)
     logger.info("Briefing sent")
 
-    # 6. Log the session
+    # 7. Log the session
     memory.log_session(SessionRecord(
         session_id=str(uuid.uuid4()),
         session_type="briefing",

@@ -7,6 +7,11 @@ config/prompts.yaml
 data/
 logs/
 
+# Server snapshots / backups (state captures, not code)
+.server_snapshot/
+claw.prev/
+*.tgz
+
 # Python
 .venv/
 __pycache__/

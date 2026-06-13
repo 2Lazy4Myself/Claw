@@ -205,13 +205,17 @@ class TestFormatTaskForPrompt:
 class TestFormatTaskMemory:
     def test_none_returns_no_history_message(self):
         from claw.probe import _format_task_memory
-        result = _format_task_memory(None)
+        from unittest.mock import MagicMock
+        store = MagicMock()
+        store.get_task_sessions.return_value = []
+        result = _format_task_memory(None, "t1", store)
         assert "no previous" in result.lower()
 
     def test_populated_memory_includes_outcome(self):
         from claw.probe import _format_task_memory
         from claw.memory import TaskMemory
         from datetime import timezone
+        from unittest.mock import MagicMock
         mem = TaskMemory(
             task_id="t1",
             last_probed_at=datetime.now(timezone.utc) - timedelta(days=3),
@@ -220,7 +224,9 @@ class TestFormatTaskMemory:
             notes="Said they'd do it Thursday.",
             snoozed_until=None,
         )
-        result = _format_task_memory(mem)
+        store = MagicMock()
+        store.get_task_sessions.return_value = []
+        result = _format_task_memory(mem, "t1", store)
         assert "user_committed" in result
         assert "3 day" in result
 

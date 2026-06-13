@@ -17,7 +17,7 @@ All timestamps stored as ISO 8601 strings in UTC.
 
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import sqlite3
 
@@ -31,6 +31,7 @@ class TaskMemory:
     last_outcome: Optional[str]  # "rescheduled" | "user_committed" | "dropped" | "no_reply"
     notes: str  # Free-text log of what the user has said about this task over time
     snoozed_until: Optional[datetime]  # If rescheduled, don't probe before this date
+    context_summary: Optional[str] = None  # Haiku-synthesised 3-sentence current state (nightly)
 
 
 @dataclass
@@ -72,14 +73,16 @@ class MemoryStore:
             conn.execute(
                 """
                 INSERT INTO task_memory
-                    (task_id, last_probed_at, probe_count, last_outcome, notes, snoozed_until)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (task_id, last_probed_at, probe_count, last_outcome, notes, snoozed_until,
+                     context_summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     last_probed_at = excluded.last_probed_at,
                     probe_count = excluded.probe_count,
                     last_outcome = excluded.last_outcome,
                     notes = excluded.notes,
-                    snoozed_until = excluded.snoozed_until
+                    snoozed_until = excluded.snoozed_until,
+                    context_summary = excluded.context_summary
                 """,
                 (
                     memory.task_id,
@@ -88,6 +91,7 @@ class MemoryStore:
                     memory.last_outcome,
                     memory.notes,
                     _dt_to_str(memory.snoozed_until),
+                    memory.context_summary,
                 ),
             )
 
@@ -120,6 +124,43 @@ class MemoryStore:
             ).fetchall()
         return [self._row_to_session(row) for row in rows]
 
+    def append_chat_turn(self, role: str, content: str, source: str) -> None:
+        """Append one conversation turn to the rolling chat memory.
+
+        role: "user" | "assistant". source: "general" | "probe" — provenance
+        only, used for debugging; reads don't filter on it.
+        """
+        with self._get_connection() as conn:
+            conn.execute(
+                "INSERT INTO chat_turns (role, content, source, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (role, content, source, _dt_to_str(datetime.now(timezone.utc))),
+            )
+
+    def get_recent_chat_turns(self, within_minutes: int, limit: int) -> list[dict]:
+        """Return recent chat turns as [{"role", "content"}], oldest-first.
+
+        Only turns newer than `within_minutes` are returned — past that
+        inactivity window the thread is considered closed and chat falls back
+        to session-summary context. At most `limit` turns (the most recent).
+        """
+        cutoff = _dt_to_str(datetime.now(timezone.utc) - timedelta(minutes=within_minutes))
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT role, content FROM chat_turns "
+                "WHERE created_at >= ? ORDER BY id DESC LIMIT ?",
+                (cutoff, limit),
+            ).fetchall()
+        # Fetched newest-first for the LIMIT; reverse to chronological order.
+        return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+
+    def prune_chat_turns(self, older_than_days: int) -> int:
+        """Delete chat turns older than N days. Returns rows removed."""
+        cutoff = _dt_to_str(datetime.now(timezone.utc) - timedelta(days=older_than_days))
+        with self._get_connection() as conn:
+            cur = conn.execute("DELETE FROM chat_turns WHERE created_at < ?", (cutoff,))
+            return cur.rowcount
+
     def get_task_memories(self, task_ids: list[str]) -> dict[str, "TaskMemory"]:
         """Returns {task_id: TaskMemory} for all known IDs. Missing IDs are absent."""
         if not task_ids:
@@ -147,19 +188,71 @@ class MemoryStore:
 
     def get_last_briefing_date(self) -> Optional[str]:
         """Returns the date (YYYY-MM-DD UTC) of the most recent briefing session, or None."""
+        return self._get_last_session_date("briefing")
+
+    def get_task_sessions(self, task_id: str, limit: int = 5) -> list[SessionRecord]:
+        """Returns the N most recent probe sessions for a specific task, newest first."""
         with self._get_connection() as conn:
-            row = conn.execute(
-                "SELECT started_at FROM sessions WHERE session_type = 'briefing' "
-                "ORDER BY started_at DESC LIMIT 1"
-            ).fetchone()
-        if row is None:
-            return None
-        dt = _str_to_dt(row["started_at"])
-        if dt is None:
-            return None
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.date().isoformat()
+            rows = conn.execute(
+                "SELECT * FROM sessions WHERE task_id = ? ORDER BY started_at DESC LIMIT ?",
+                (task_id, limit),
+            ).fetchall()
+        return [self._row_to_session(row) for row in rows]
+
+    def get_sessions_since_days(self, days: int, session_type: Optional[str] = None) -> list[SessionRecord]:
+        """Returns sessions started within the last N days, newest first.
+
+        Pass session_type to restrict to e.g. 'probe' sessions only.
+        """
+        cutoff = _dt_to_str(datetime.now(timezone.utc) - timedelta(days=days))
+        with self._get_connection() as conn:
+            if session_type:
+                rows = conn.execute(
+                    "SELECT * FROM sessions WHERE started_at >= ? AND session_type = ? "
+                    "ORDER BY started_at DESC",
+                    (cutoff, session_type),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM sessions WHERE started_at >= ? ORDER BY started_at DESC",
+                    (cutoff,),
+                ).fetchall()
+        return [self._row_to_session(row) for row in rows]
+
+    def get_all_task_ids_with_probe_count(self, min_count: int) -> list[tuple[str, int]]:
+        """Returns [(task_id, probe_count)] for tasks probed at least min_count times."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT task_id, probe_count FROM task_memory WHERE probe_count >= ?",
+                (min_count,),
+            ).fetchall()
+        return [(row["task_id"], row["probe_count"]) for row in rows]
+
+    def get_last_nightly_date(self) -> Optional[str]:
+        """Returns the date (YYYY-MM-DD UTC) of the most recent nightly synthesis, or None."""
+        return self._get_last_session_date("nightly")
+
+    # ─── User profile ──────────────────────────────────────────────────────────
+
+    def upsert_user_profile(self, summary: str) -> None:
+        """Stores (or replaces) the synthesised user trait profile."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_profile (id, summary, synthesised_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    summary = excluded.summary,
+                    synthesised_at = excluded.synthesised_at
+                """,
+                (summary, _dt_to_str(datetime.now(timezone.utc))),
+            )
+
+    def get_user_profile(self) -> Optional[str]:
+        """Returns the current user profile summary, or None if not yet synthesised."""
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT summary FROM user_profile WHERE id = 1").fetchone()
+        return row["summary"] if row else None
 
     def get_tasks_not_recently_probed(
         self, task_ids: list[str], min_hours: int = 48
@@ -249,6 +342,23 @@ class MemoryStore:
 
     # ─── Internal ─────────────────────────────────────────────────────────────
 
+    def _get_last_session_date(self, session_type: str) -> Optional[str]:
+        """Returns the local date (YYYY-MM-DD UTC) of the most recent session of a given type."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT started_at FROM sessions WHERE session_type = ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (session_type,),
+            ).fetchone()
+        if row is None:
+            return None
+        dt = _str_to_dt(row["started_at"])
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.date().isoformat()
+
     def get_listener_offset(self) -> Optional[int]:
         """Returns the last processed Telegram update_id + 1, or None if never set."""
         with self._get_connection() as conn:
@@ -270,6 +380,35 @@ class MemoryStore:
                 (str(offset),),
             )
 
+    # Idempotency for inbound updates. Telegram delivery is at-least-once: if the
+    # ack round-trip to getUpdates is lost, an already-enqueued update is redelivered.
+    # Recording handled update_ids makes reprocessing a no-op (see ADR-014).
+    _HANDLED_RETENTION = 10_000  # rows kept below the latest update_id; table is bounded
+
+    def already_handled(self, update_id: int) -> bool:
+        """True if this Telegram update_id has already been processed."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM handled_updates WHERE update_id = ?", (update_id,)
+            ).fetchone()
+        return row is not None
+
+    def mark_handled(self, update_id: int) -> None:
+        """Records a Telegram update_id as processed, pruning old rows to stay bounded."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO handled_updates (update_id, handled_at) VALUES (?, ?)
+                ON CONFLICT(update_id) DO NOTHING
+                """,
+                (update_id, datetime.now(timezone.utc).isoformat()),
+            )
+            # update_ids increase monotonically, so a simple low-water cutoff bounds the table
+            conn.execute(
+                "DELETE FROM handled_updates WHERE update_id < ?",
+                (update_id - self._HANDLED_RETENTION,),
+            )
+
     def _init_schema(self) -> None:
         with self._get_connection() as conn:
             conn.execute("""
@@ -279,9 +418,16 @@ class MemoryStore:
                     probe_count INTEGER DEFAULT 0,
                     last_outcome TEXT,
                     notes TEXT DEFAULT '',
-                    snoozed_until TEXT
+                    snoozed_until TEXT,
+                    context_summary TEXT
                 )
             """)
+            # Migrate existing DBs that predate context_summary
+            try:
+                conn.execute("ALTER TABLE task_memory ADD COLUMN context_summary TEXT")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_id TEXT PRIMARY KEY,
@@ -309,6 +455,31 @@ class MemoryStore:
                     answered_at TEXT
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_profile (
+                    id          INTEGER PRIMARY KEY CHECK (id = 1),
+                    summary     TEXT NOT NULL,
+                    synthesised_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS handled_updates (
+                    update_id  INTEGER PRIMARY KEY,
+                    handled_at TEXT NOT NULL
+                )
+            """)
+            # Rolling short-term memory for open chat: each user/assistant turn
+            # in general conversation, plus probe turns flushed on close. Read
+            # back as a recency-windowed thread so chat is no longer stateless.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS chat_turns (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    role       TEXT NOT NULL,
+                    content    TEXT NOT NULL,
+                    source     TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
 
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -323,6 +494,7 @@ class MemoryStore:
             last_outcome=row["last_outcome"],
             notes=row["notes"] or "",
             snoozed_until=_str_to_dt(row["snoozed_until"]),
+            context_summary=row["context_summary"],
         )
 
     def _row_to_session(self, row: sqlite3.Row) -> SessionRecord:

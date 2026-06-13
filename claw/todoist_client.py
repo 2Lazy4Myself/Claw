@@ -51,7 +51,8 @@ PROJECTS: dict[str, dict[str, str]] = {
     },
     "claw": {
         "project_id": "6gW4jC59ChjCjpFG",
-        "LIFESTYLE":  "6gfjQXwJfGRVvJGG",
+        "LIFESTYLE":   "6gfjQXwJfGRVvJGG",
+        "PROGRAMMES":  "6ghPVc999Mm3Fwxp",
     },
 }
 
@@ -244,6 +245,26 @@ class TodoistClient:
             elif goals_section_id and sid == goals_section_id:
                 goal_tasks.append(self._parse(r, "claw", "Goals", today))
         return habits, goal_tasks
+
+    def get_programmes(self) -> list[Task]:
+        """All non-completed tasks in the Programmes section of the Claw project."""
+        project = self._project("claw")
+        programmes_section_id = project["PROGRAMMES"]
+        today = date.today()
+        raw = self._fetch_all(
+            f"{self.BASE_URL}/tasks", {"project_id": project["project_id"]}
+        )
+        return [
+            self._parse(r, "claw", "Programmes", today)
+            for r in raw
+            if not r.get("is_completed") and r.get("section_id") == programmes_section_id
+        ]
+
+    def append_to_task_description(self, task_id: str, text: str) -> None:
+        """Appends text to an existing task description."""
+        resp = self._request_with_retry("GET", f"{self.BASE_URL}/tasks/{task_id}")
+        current_desc = resp.json().get("description", "") or ""
+        self.update_task_description(task_id, current_desc.rstrip() + text)
 
     def update_goal_current(self, task_id: str, value: str) -> None:
         """

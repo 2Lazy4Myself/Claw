@@ -26,6 +26,11 @@ todoist:
     - work
     - home
 
+  # Fitness programmes live in the Claw project under a "Programmes" section.
+  # Section ID is hardcoded in todoist_client.py (PROGRAMMES: 6ghPVc999Mm3Fwxp).
+  # Create one task per programme; description follows the structured template.
+  # See docs/DECISIONS.md or the example programme task for the format.
+
   # Tasks overdue by fewer than this many days will not be probed.
   min_overdue_days_to_probe: 2
 
@@ -64,8 +69,9 @@ claude:
   # Max tokens for probe conversation turns.
   probe_max_tokens: 300
 
-  # Max tokens for the task selection call (JSON output, can be small).
-  selection_max_tokens: 150
+  # Max tokens for the task selection call. Must be large enough to cover
+  # any <think> block emitted by reasoning models before the JSON output.
+  selection_max_tokens: 2000
 
 # ─── Scheduling ──────────────────────────────────────────────────────────────
 schedule:

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import re
 import sys
 import uuid
 from datetime import datetime, date as _date, time as _time, timezone
@@ -24,15 +25,17 @@ from typing import Optional
 
 from claw.claude_client import ClaudeClient
 from claw.config import load_config
+from claw import fitness as fitness_mod
 from claw.goals import get_goals, build_goal_summary, goal_line_for_task, goal_for_task, GoalRecord
 from claw.memory import MemoryStore, TaskMemory, SessionRecord, build_context_block
 from claw.telegram_client import TelegramClient
 from claw.todoist_client import TodoistClient, Task, from_env as todoist_from_env
 from claw import prompts
+from claw.watchlist import get_overdue_topics, OverdueTopic
 
 logger = logging.getLogger(__name__)
 
-MAX_PROBE_TURNS = 4
+_DEFAULT_MAX_PROBE_TURNS = 20  # safety valve — conversations close via inactivity, not this
 
 
 _strip_json_fences = prompts.strip_json_fences
@@ -78,11 +81,33 @@ def _run_probe_inner(
     for project_key in config["todoist"]["projects"]:
         all_tasks.extend(todoist.get_waiting_for(project_key))
 
+    # Fitness programme — fetch once and carry through the session
+    programme_tasks = todoist.get_programmes()
+    active_programme = fitness_mod.get_active_programme(programme_tasks)
+    if active_programme:
+        compliance = fitness_mod.get_week_compliance(active_programme)
+        fitness_urgency = fitness_mod.compliance_urgency(compliance)
+    else:
+        fitness_urgency = "normal"
+
     if not all_tasks:
         logger.info("No tasks — skipping probe")
         return
 
-    # 2. Filter: skip tasks probed too recently, or currently snoozed
+    # Resolve goals early — needed by both watchlist and selection loop
+    goals = get_goals(goal_tasks)
+
+    # 2. Watchlist check — bypasses the 48h recency filter.
+    # If any topic (fitness, goal, habit) has been silent for too long, run a
+    # targeted check-in and return; the normal probe fires on the next cron tick.
+    overdue = get_overdue_topics(memory, all_tasks, goals, active_programme, config, _date.today())
+    if overdue:
+        topic = overdue[0]
+        logger.info(f"Watchlist check-in: '{topic.topic_name}' silent {topic.days_silent}d")
+        _run_checkin(topic, todoist, memory, claude, telegram, config, cap, reply_queue, goals, active_programme, user_profile=user_profile)
+        return
+
+    # 3. Filter: skip tasks probed too recently, or currently snoozed
     # Waiting tasks use a longer staleness threshold (default 72h vs 48h for regular tasks)
     min_hours = config["behaviour"]["min_hours_between_same_task_probe"]
     waiting_min_hours = config["behaviour"].get("waiting_for_min_probe_hours", 72)
@@ -104,9 +129,9 @@ def _run_probe_inner(
         logger.info("All tasks probed recently or snoozed — skipping")
         return
 
-    # 3. Constant Cleaning loop — probe tasks until no engagement or cap hit
-    goals = get_goals(goal_tasks)
+    # 4. Constant Cleaning loop — probe tasks until no engagement or cap hit
     goal_context = build_goal_summary(all_tasks, goals, memory)
+    user_profile = memory.get_user_profile()
 
     max_chain = config["behaviour"].get("max_chain_length", 5)
     discussed_ids: set[str] = set()
@@ -121,6 +146,7 @@ def _run_probe_inner(
         selected_task = _select_task(
             eligible_tasks, memory, claude, config,
             last_discussed=last_discussed, goal_context=goal_context,
+            fitness_urgency=fitness_urgency,
         )
         if selected_task is None:
             logger.info("Claude selected no task to probe")
@@ -132,14 +158,15 @@ def _run_probe_inner(
         outcome = _probe_one_task(
             selected_task, todoist, memory, claude, telegram, config,
             chain_index=chain_index, last_discussed=last_discussed, goals=goals, cap=cap,
-            reply_queue=reply_queue,
+            reply_queue=reply_queue, active_programme=active_programme,
+            user_profile=user_profile,
         )
 
         discussed_ids.add(selected_task.id)
         last_discussed = selected_task
 
-        if outcome == "no_reply":
-            logger.info("No reply — ending session")
+        if outcome in ("no_reply", "timed_out"):
+            logger.info(f"Session ended ({outcome}) — not chaining")
             break
 
 
@@ -155,6 +182,9 @@ def _probe_one_task(
     goals: Optional[list[GoalRecord]] = None,
     cap: int = 3,
     reply_queue: Optional[queue.Queue] = None,
+    active_programme=None,
+    checkin_ctx: str = "",
+    user_profile: Optional[str] = None,
 ) -> str:
     """
     Runs one complete probe conversation for a single task.
@@ -172,18 +202,43 @@ def _probe_one_task(
             "Move to this next — no recap, just open naturally."
         )
 
-    g_line = goal_line_for_task(task, goals or [])
-    goal_line = f"{g_line}\n" if g_line else ""
+    # Detect fitness task first — guards goal_line injection below
+    is_fitness = (
+        active_programme is not None
+        and any(label in task.labels for label in active_programme.labels)
+    )
 
+    # Suppress goal_line for fitness tasks: FITNESS_PROBE_SYSTEM is the trainer persona;
+    # injecting a weight-goal frame alongside it makes Claude blend topics (the bug that
+    # caused mixed questions about strength goals vs. weight targets).
+    g_line = "" if is_fitness else goal_line_for_task(task, goals or [])
+    goal_line = f"{g_line}\n" if g_line else ""
+    if is_fitness:
+        today_session = fitness_mod.get_today_session(active_programme, _date.today())
+        probe_compliance = fitness_mod.get_week_compliance(active_programme)
+        fitness_probe_ctx = fitness_mod.build_fitness_probe_context(
+            active_programme, today_session, probe_compliance, task
+        )
+        system_prompt_name = "FITNESS_PROBE_SYSTEM"
+    else:
+        today_session = None
+        fitness_probe_ctx = ""
+        system_prompt_name = "PROBE_SYSTEM"
+
+    checkin_context = (checkin_ctx + "\n") if checkin_ctx else ""
+    user_profile_block = f"User profile:\n{user_profile}\n\n" if user_profile else ""
     opening_user_msg = prompts.PROBE_USER_TEMPLATE.format(
+        user_profile=user_profile_block,
+        checkin_context=checkin_context,
         task=_format_task_for_prompt(task),
         goal_line=goal_line,
-        task_memory=_format_task_memory(task_memory),
+        task_memory=_format_task_memory(task_memory, task.id, memory),
         engagement_context=engagement_context,
         chain_context=chain_context,
+        fitness_context=fitness_probe_ctx,
     )
     opening = claude.complete(
-        system=prompts.get_prompt("PROBE_SYSTEM"),
+        system=prompts.get_prompt(system_prompt_name),
         user=opening_user_msg,
         max_tokens=config["claude"]["probe_max_tokens"],
     )
@@ -206,9 +261,17 @@ def _probe_one_task(
     # If the user engaged, the slot is answered — close it so the next cron can top up
     if outcome != "no_reply":
         memory.close_message_code(msg_code)
+        # Flush the probe's turns into rolling chat memory so a follow-up message
+        # after the probe closes (or times out) continues the same thread instead
+        # of hitting the stateless general handler cold.
+        _flush_probe_turns_to_chat(memory, task, conversation_history)
 
     if task.is_habit:
         _write_habit_log(task, conversation_history, outcome, todoist, claude, config)
+        if is_fitness and active_programme is not None and outcome != "no_reply":
+            _append_fitness_programme_log(
+                active_programme, task, today_session, outcome, todoist
+            )
 
     subtasks = todoist.get_subtasks(task.id)
     _detect_and_close(task, subtasks, conversation_history, outcome, todoist, telegram, claude, config)
@@ -245,12 +308,92 @@ def _probe_one_task(
         last_outcome=outcome,
         notes=(existing.notes + notes_append).strip(),
         snoozed_until=snooze_until or existing.snoozed_until,
+        context_summary=existing.context_summary,
     ))
 
     return outcome
 
 
+# ─── Watchlist check-in ──────────────────────────────────────────────────────
+
+def _run_checkin(
+    topic: OverdueTopic,
+    todoist: TodoistClient,
+    memory: MemoryStore,
+    claude: ClaudeClient,
+    telegram: TelegramClient,
+    config: dict,
+    cap: int,
+    reply_queue: Optional[queue.Queue],
+    goals: Optional[list[GoalRecord]],
+    active_programme=None,
+    user_profile: Optional[str] = None,
+) -> None:
+    """Runs a gap-aware check-in for a topic that has been silent too long."""
+    gap_note = _gap_note(topic.days_silent, config)
+
+    if topic.topic_type == "fitness" and active_programme is not None:
+        today_session = fitness_mod.get_today_session(active_programme, _date.today())
+        probe_compliance = fitness_mod.get_week_compliance(active_programme)
+        topic_ctx = fitness_mod.build_fitness_probe_context(
+            active_programme, today_session, probe_compliance, topic.task
+        )
+    elif topic.topic_type == "goal":
+        topic_ctx = goal_line_for_task(topic.task, goals or [])
+    else:
+        topic_ctx = ""
+
+    checkin_ctx = f"{gap_note}\n{topic_ctx}".strip()
+    _probe_one_task(
+        topic.task, todoist, memory, claude, telegram, config,
+        chain_index=0, last_discussed=None, goals=goals, cap=cap,
+        reply_queue=reply_queue, active_programme=active_programme,
+        checkin_ctx=checkin_ctx,
+        user_profile=user_profile,
+    )
+
+
+def _gap_note(days_silent: int, config: dict) -> str:
+    urgent = config.get("watchlist", {}).get("urgent_threshold_days", 14)
+    if days_silent >= urgent:
+        return (
+            f"CONTEXT: This topic has been silent for {days_silent} days. "
+            "Open with genuine curiosity about what's been happening — "
+            "offer concrete paths forward, not just open questions."
+        )
+    return (
+        f"CONTEXT: This topic hasn't come up in {days_silent} days. "
+        "Open by gently acknowledging the gap."
+    )
+
+
 # ─── Task selection ───────────────────────────────────────────────────────────
+
+_TASK_ID_RE = re.compile(r'"task_id"\s*:\s*"([^"]+)"')
+_NULL_TASK_RE = re.compile(r'"task_id"\s*:\s*null')
+
+
+def _extract_partial_selection(raw: str) -> Optional[dict]:
+    """Extracts task_id from a truncated JSON response using regex fallback.
+
+    Takes the LAST occurrence of each pattern so that a task_id mentioned inside
+    a 'reason' string value doesn't shadow the real root-level task_id key.
+    """
+    null_positions = [m.start() for m in _NULL_TASK_RE.finditer(raw)]
+    id_matches = list(_TASK_ID_RE.finditer(raw))
+
+    if not null_positions and not id_matches:
+        return None
+
+    last_null = null_positions[-1] if null_positions else -1
+    last_id = id_matches[-1] if id_matches else None
+    last_id_pos = last_id.start() if last_id else -1
+
+    logger.warning(f"Task selection JSON truncated — regex fallback: {raw!r}")
+    if last_null > last_id_pos:
+        return {"task_id": None}
+    return {"task_id": last_id.group(1)}
+
 
 def _select_task(
     tasks: list[Task],
@@ -259,6 +402,7 @@ def _select_task(
     config: dict,
     last_discussed: Optional[Task] = None,
     goal_context: str = "",
+    fitness_urgency: str = "normal",
 ) -> Optional[Task]:
     """
     Asks Claude (cheap model) to pick one task to probe. Returns the Task or None.
@@ -268,12 +412,20 @@ def _select_task(
         for t in tasks
     )
     previous_topic = last_discussed.content if last_discussed else ""
+    if fitness_urgency == "urgent":
+        fitness_urgency_note = (
+            "\nCOMPLIANCE FLAG: 3+ fitness sessions missed this week. "
+            "Prioritise fitness habits above work tasks in this session."
+        )
+    else:
+        fitness_urgency_note = ""
     raw = claude.complete(
         system=prompts.get_prompt("TASK_SELECTION_SYSTEM"),
         user=prompts.TASK_SELECTION_USER_TEMPLATE.format(
             task_list_with_memory=task_list_with_memory,
             goal_context=goal_context or "No goals configured.",
             previous_topic=previous_topic,
+            fitness_urgency_note=fitness_urgency_note,
         ),
         max_tokens=config["claude"]["selection_max_tokens"],
         model=config["claude"]["selection_model"],
@@ -282,8 +434,10 @@ def _select_task(
     try:
         parsed = json.loads(_strip_json_fences(raw))
     except json.JSONDecodeError:
-        logger.warning(f"Task selection returned non-JSON: {raw!r}")
-        return None
+        parsed = _extract_partial_selection(raw)
+        if parsed is None:
+            logger.warning(f"Task selection returned non-JSON: {raw!r}")
+            return None
 
     selected_id = parsed.get("task_id")
     if not selected_id:
@@ -313,14 +467,26 @@ def _run_conversation_loop(
     """
     Handles back-and-forth after the opening message.
 
-    Returns: "no_reply" | "closed" | "max_turns_reached"
+    Returns: "no_reply" | "closed" | "timed_out" | "max_turns_reached"
+
+    Conversations are open-ended — they continue until Claude closes naturally,
+    the user goes quiet (inactivity timeout), or the safety-valve turn cap fires.
     """
     timeout = config["telegram"]["reply_timeout_seconds"]
 
-    for turn in range(MAX_PROBE_TURNS):
+    max_turns = config["behaviour"].get("max_probe_turns", _DEFAULT_MAX_PROBE_TURNS)
+
+    for turn in range(max_turns):
         reply = telegram.wait_for_reply(timeout, reply_queue)
+
         if reply is None:
-            return "no_reply"
+            # Inactivity timeout fired.
+            if turn == 0:
+                return "no_reply"
+            # Was in conversation — close gracefully with a contextual message.
+            closing = _generate_timeout_close(history, claude, config)
+            telegram.send_message(closing)
+            return "timed_out"
 
         history.append({"role": "user", "content": reply})
 
@@ -335,7 +501,53 @@ def _run_conversation_loop(
         if _is_conversation_closed(followup):
             return "closed"
 
+    # Safety valve: max_turns hit (shouldn't happen in normal use).
+    # Close cleanly rather than leaving a hanging question.
+    closing = _generate_timeout_close(history, claude, config)
+    telegram.send_message(closing)
     return "max_turns_reached"
+
+
+def _flush_probe_turns_to_chat(
+    memory: MemoryStore,
+    task: Task,
+    conversation_history: list[dict],
+) -> None:
+    """
+    Append a probe's conversation into rolling chat memory.
+
+    The first history entry is the large templated opening user message — replace
+    it with a compact marker so it doesn't bloat the chat thread; store the rest
+    (the assistant opening and the real back-and-forth) verbatim.
+    """
+    if not conversation_history:
+        return
+    try:
+        memory.append_chat_turn("user", f"[probe: {task.content}]", "probe")
+        for turn in conversation_history[1:]:
+            memory.append_chat_turn(turn["role"], turn["content"], "probe")
+    except Exception as e:
+        logger.warning(f"Failed to flush probe turns to chat memory: {e}")
+
+
+def _generate_timeout_close(
+    history: list[dict],
+    claude: ClaudeClient,
+    config: dict,
+) -> str:
+    """Generates a contextual closing message when the conversation goes quiet or hits the turn cap."""
+    # Pass only the last 6 messages — enough context for a closing line, cheaper than the full history.
+    trimmed = history[:2] + history[-6:] if len(history) > 8 else history
+    try:
+        return claude.complete_with_history(
+            system=prompts.get_prompt("PROBE_TIMEOUT_CLOSE_SYSTEM"),
+            messages=trimmed,
+            max_tokens=120,
+            model=config["claude"]["selection_model"],
+        )
+    except Exception as e:
+        logger.warning(f"Failed to generate timeout close: {e}", exc_info=True)
+        return "Gone quiet — leaving this here. Give me some context if you want to pick it up."
 
 
 def _is_conversation_closed(response: str) -> bool:
@@ -363,7 +575,7 @@ def _summarise_session(
         return claude.complete(
             system=prompts.get_prompt("SESSION_SUMMARY_SYSTEM"),
             user=f"Task: {task.content}\nOutcome: {outcome}\n\nTranscript:\n{transcript}",
-            max_tokens=100,
+            max_tokens=400,
             model=config["claude"]["selection_model"],
         )
     except Exception as e:
@@ -395,8 +607,12 @@ def _format_task_for_prompt(task: Task) -> str:
     return "\n".join(lines)
 
 
-def _format_task_memory(task_memory: Optional[TaskMemory]) -> str:
-    """Formats TaskMemory for prompt injection."""
+def _format_task_memory(
+    task_memory: Optional[TaskMemory],
+    task_id: str,
+    memory: MemoryStore,
+) -> str:
+    """Formats TaskMemory for prompt injection, including recent session history."""
     if task_memory is None:
         return "No previous history for this task."
     from claw.memory import _days_ago
@@ -407,8 +623,23 @@ def _format_task_memory(task_memory: Optional[TaskMemory]) -> str:
         f"Probe count: {task_memory.probe_count}",
         f"Last outcome: {task_memory.last_outcome or 'unknown'}",
     ]
-    if task_memory.notes:
+
+    # Synthesised context takes priority over raw notes snippet
+    if task_memory.context_summary:
+        parts.append(f"Context summary:\n{task_memory.context_summary}")
+    elif task_memory.notes:
         parts.append(f"Notes: {task_memory.notes[:300]}")
+
+    # Surface actual session summaries (not just a count)
+    recent = memory.get_task_sessions(task_id, limit=5)
+    history_lines = [
+        f"[{s.started_at.strftime('%-d %b')}] {s.summary}"
+        for s in recent
+        if s.summary
+    ]
+    if history_lines:
+        parts.append("Recent probe history:\n" + "\n".join(history_lines))
+
     if task_memory.snoozed_until:
         parts.append(f"Snoozed until: {task_memory.snoozed_until.date()}")
     return "\n".join(parts)
@@ -452,7 +683,7 @@ def _detect_and_close(
     After a probe conversation, asks Claude whether the user indicated completion.
     If so, closes the task or subtask in Todoist and sends a confirmation to Telegram.
     """
-    if outcome == "no_reply":
+    if outcome in ("no_reply", "timed_out"):
         return
 
     subtask_names = [s.content for s in subtasks]
@@ -464,7 +695,7 @@ def _detect_and_close(
             f"Known subtasks: {subtask_names if subtask_names else 'none'}\n\n"
             f"Conversation:\n{json.dumps(history)}"
         ),
-        max_tokens=80,
+        max_tokens=400,
         model=config["claude"]["selection_model"],
     )
     try:
@@ -507,7 +738,7 @@ def _detect_and_snooze(
     Returns the snooze datetime if set, None otherwise.
     Sends a confirmation message via Telegram when a snooze is applied.
     """
-    if outcome == "no_reply":
+    if outcome in ("no_reply", "timed_out"):
         return None
 
     today = _date.today().isoformat()
@@ -518,7 +749,7 @@ def _detect_and_snooze(
             f"Task: {task.content}\n\n"
             f"Conversation:\n{json.dumps(history)}"
         ),
-        max_tokens=80,
+        max_tokens=400,
         model=config["claude"]["selection_model"],
     )
     try:
@@ -563,7 +794,7 @@ def _detect_and_update_goal(
     for a linked goal's Current field. If so, writes it back to Todoist and
     sends a brief confirmation.
     """
-    if outcome == "no_reply":
+    if outcome in ("no_reply", "timed_out"):
         return
 
     goal = goal_for_task(task, goals)
@@ -578,7 +809,7 @@ def _detect_and_update_goal(
             f"Current: {goal.current or 'unknown'}\n\n"
             f"Conversation:\n{json.dumps(history)}"
         ),
-        max_tokens=60,
+        max_tokens=400,
         model=config["claude"]["selection_model"],
     )
 
@@ -629,6 +860,28 @@ def _find_subtask(name: str, subtasks: list[Task]) -> Optional[Task]:
     return None
 
 
+def _append_fitness_programme_log(
+    programme,
+    task: Task,
+    today_session,
+    outcome: str,
+    todoist: TodoistClient,
+) -> None:
+    """Appends a structured log entry to the programme task description."""
+    today = _date.today()
+    day_abbr = today.strftime("%a")
+    week_label = f"W{programme.current_week}"
+    session_label = (
+        today_session.session_type
+        if today_session and today_session.session_type
+        else task.content
+    )
+    symbol = "✓" if outcome == "closed" else "—"
+    entry = f"[{today.isoformat()} {day_abbr} {week_label}] {symbol} {session_label}"
+    fitness_mod.append_programme_log(programme, entry, todoist)
+    programme.log_lines.append(entry)  # keep in-memory state consistent for multi-chain sessions
+
+
 def _write_habit_log(
     task: Task,
     history: list[dict],
@@ -644,7 +897,7 @@ def _write_habit_log(
     raw = claude.complete(
         system=prompts.get_prompt("HABIT_LOG_SYSTEM"),
         user=f"Habit: {task.content}\nOutcome: {outcome}\n\n{json.dumps(history)}",
-        max_tokens=120,
+        max_tokens=400,
         model=config["claude"]["selection_model"],
     )
     try:
@@ -653,8 +906,13 @@ def _write_habit_log(
         logger.warning(f"Habit log returned non-JSON: {raw!r}")
         return
 
+    log_text = parsed.get("log")
+    if not log_text:
+        logger.warning(f"Habit log response missing 'log' key: {raw!r}")
+        return
+
     today = _date.today().strftime("%-d %b")
-    entry = f"\n[{today}] {parsed['log']}"
+    entry = f"\n[{today}] {log_text}"
     if parsed.get("note"):
         entry += f" — {parsed['note']}"
 

@@ -18,8 +18,12 @@ Calls are routed through LiteLLM at the configured base_url. Two tiers:
 from __future__ import annotations
 import logging
 import os
+import re
 import time
 import openai
+
+_THINK_RE = re.compile(r'<think>.*?</think>\s*', re.DOTALL)
+_THINK_OPEN_RE = re.compile(r'<think>.*', re.DOTALL)  # unclosed tag (truncated response)
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +120,8 @@ class ClaudeClient:
                     max_tokens=max_tokens,
                     messages=full_messages,
                 )
-                text = response.choices[0].message.content
+                content = response.choices[0].message.content or ""
+                text = _THINK_OPEN_RE.sub('', _THINK_RE.sub('', content)).strip()
                 logger.debug(f"AI responded ({len(text)} chars)")
                 return text
 

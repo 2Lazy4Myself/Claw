@@ -216,3 +216,21 @@ Centralising key management in LiteLLM means Claw never holds an Anthropic key. 
 - Response text: `response.choices[0].message.content` instead of `response.content[0].text`
 - `LITELLM_API_KEY` added to `.env`; `ANTHROPIC_API_KEY` removed
 - `config.yaml` gains `litellm.base_url`; `LITELLM_BASE_URL` env var overrides it if set
+
+---
+
+## ADR-010: Git Is the Source of Truth; Deploy via a Build Clone
+
+**Date:** 13 June 2026  
+**Status:** Accepted
+
+**Context:**  
+Phases of work were edited directly in `/mnt/zpool/appdata/claw/src` on the Unraid server and pushed to GitHub only intermittently. By 13 June the live server had ~2.5 weeks of uncommitted code (the Programmes / nightly-synthesis layer — 6 modules plus extensions) sitting on top of the last commit, with no off-disk backup. A naive "deploy from git" would have silently rolled production back and destroyed live code. The repository and the running container had drifted apart with no guard against it.
+
+**Decision:** The git repository is the single source of truth. The server holds a dedicated git **build clone** at `/mnt/zpool/appdata/claw/repo`; deploys run `scripts/deploy.sh` there: `git pull --ff-only` → run unit tests in a throwaway container → `docker build` → smoke-check imports → verify the built image's `claw/*.py` checksums against the running container → swap the container, re-attaching the existing `data` / `config.yaml` / `.env` / `logs` mounts. Direct editing of `src/` is deprecated and kept only as a historical reference.
+
+**Rationale:**  
+Code changes become reviewable, reversible, and backed up off-box (GitHub). Test-gating the build catches regressions before they reach the running container; the checksum step proves the built image matches the committed tree before the swap. A `--verify-only` flag builds and verifies without swapping, so the pipeline can be exercised with zero downtime.
+
+**Consequences:**  
+All future changes flow edit → commit → push → `deploy.sh`. Runtime state (`data/claw.db`, `config.yaml`, `.env`) stays out of git (gitignored) and is supplied by mounts — so version control does **not** cover live state. `data/claw.db` (the accumulated task memory and synthesised user profile) therefore still needs its own backup strategy; that remains an open follow-up.
