@@ -1,0 +1,14 @@
+{
+  "name": "todoist-telegram",
+  "version": "1.0.0",
+  "description": "Todoist task digests and reminders via Telegram",
+  "main": "scheduler.js",
+  "scripts": {
+    "start": "node scheduler.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3"
+  }
+}
