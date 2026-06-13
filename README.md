@@ -101,10 +101,13 @@ See `docs/BUILD_LOG.md` for the full phase history. Summary:
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1 | MVP: briefing + probe + memory + Telegram + Todoist | 🔲 Not started |
-| 2 | Adaptive timing — learn when you're responsive | 🔲 Not started |
-| 3 | Goal layer — tasks linked to longer-term goals | 🔲 Not started |
-| 4 | Sentiment tracking over time | 🔲 Not started |
+| 1–1.9 | MVP + habits, write-back, listener, snooze, Constant Cleaning, Waiting For | ✅ Live |
+| 2 | Adaptive cadence orchestrator + goal-first prompts | ✅ Live |
+| 3 | Goal layer — Todoist-native task→goal mapping | ✅ Live |
+| 4 | M-code pending-message registry | ✅ Live |
+| 5 | Single-process daemon replaces crontab | ✅ Live |
+| — | LiteLLM proxy for all AI calls | ✅ Live |
+| — | Programmes / fitness, nightly synthesis, watchlist, audit | ✅ Live |
 
 ---
 
@@ -133,15 +136,32 @@ python -m claw.probe
 
 ---
 
-## Cron Setup (Unraid / Linux)
+## Deployment (Unraid)
 
-```cron
-# Morning briefing at 8am
-0 8 * * * /path/to/claw/scripts/run_briefing.sh
+Claw runs in production as a **single daemon container** (`python -m claw.main`) — a
+persistent process that polls Telegram, runs the orchestrator on a 30-minute tick, and
+runs nightly synthesis. The old `scripts/run_*.sh` cron wrappers are superseded (kept for
+reference only). All AI calls route through a local LiteLLM proxy (see ADR-009).
 
-# Evening probe at 6pm
-0 18 * * * /path/to/claw/scripts/run_probe.sh
+**Git is the source of truth (ADR-010).** The server holds a build clone at
+`/mnt/zpool/appdata/claw/repo`; deploys run there:
+
+```bash
+# on the dev box
+edit → commit → push
+
+# on the server
+ssh root@<server> 'cd /mnt/zpool/appdata/claw/repo && ./scripts/deploy.sh'
+#   deploy.sh: git pull → unit tests → docker build (claw:candidate) → import + checksum
+#              verify → promote to claw:latest → swap container (mounts re-attached)
+#   pass --verify-only to build + verify with zero downtime (no swap)
 ```
+
+Runtime state (`data/claw.db`, `config.yaml`, `.env`) is gitignored and supplied by bind
+mounts — **never** committed. Direct editing of the server's `src/` is deprecated.
+
+> One-time setup: the build clone uses a tokenless SSH remote, so the server needs a
+> GitHub deploy key (or credential helper) before `git pull` will authenticate.
 
 ---
 
