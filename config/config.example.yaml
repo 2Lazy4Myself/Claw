@@ -88,6 +88,8 @@ schedule:
   briefing_window_end: "10:00"      # briefing only fires before this time
   min_minutes_between_sessions: 90  # cooldown between any two sessions
   max_pending_messages: 3           # max unanswered M-coded probes before Claw goes quiet (briefings bypass this)
+  nightly_synthesis_after: "20:00"  # nightly synthesis (+ weekly review) fire after this, within the active window
+  weekly_review_day: 6              # day the weekly review runs (Mon=0 … Sun=6); runs once per ISO week
 
 # ─── Behaviour ───────────────────────────────────────────────────────────────
 behaviour:
@@ -108,6 +110,12 @@ behaviour:
   # Maximum number of tasks to probe in a single Constant Cleaning session.
   # Session ends early if the user stops responding.
   max_chain_length: 5
+
+  # Task capture from chat: where a captured task lands when the classifier can't
+  # tell (e.g. "remind me to call the dentist"). project: work|home; section is a
+  # time-horizon key (TODAY, NEXT_FEW, THIS_WEEK, NEXT_WEEK, THIS_MONTH, UNPROCESSED).
+  capture_default_project: "home"
+  capture_default_section: "TODAY"
 
 # ─── Goals ───────────────────────────────────────────────────────────────────
 # Goals are managed in Todoist — not here.

@@ -145,6 +145,32 @@ class MemoryStore:
                 (role, content, source, _dt_to_str(datetime.now(timezone.utc))),
             )
 
+    def add_goal_measurement(
+        self, goal_task_id: str, value: str, numeric: Optional[float],
+        recorded_at: Optional[datetime] = None,
+    ) -> None:
+        """Records a dated goal measurement so trajectory/trend can be computed later."""
+        when = recorded_at or datetime.now(timezone.utc)
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO goal_measurements (goal_task_id, value, numeric, recorded_at) "
+                "VALUES (?, ?, ?, ?)",
+                (goal_task_id, value, numeric, _dt_to_str(when)),
+            )
+
+    def get_goal_measurements(self, goal_task_id: str) -> list[dict]:
+        """Returns this goal's measurements oldest-first: dicts of value/numeric/recorded_at."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT value, numeric, recorded_at FROM goal_measurements "
+                "WHERE goal_task_id = ? ORDER BY recorded_at ASC",
+                (goal_task_id,),
+            ).fetchall()
+        return [
+            {"value": r["value"], "numeric": r["numeric"], "recorded_at": _str_to_dt(r["recorded_at"])}
+            for r in rows
+        ]
+
     def get_recent_chat_turns(self, within_minutes: int, limit: int) -> list[dict]:
         """Return recent chat turns as [{"role", "content"}], oldest-first.
 
@@ -239,6 +265,10 @@ class MemoryStore:
     def get_last_nightly_date(self) -> Optional[str]:
         """Returns the date (YYYY-MM-DD UTC) of the most recent nightly synthesis, or None."""
         return self._get_last_session_date("nightly")
+
+    def get_last_weekly_date(self) -> Optional[str]:
+        """Returns the date (YYYY-MM-DD UTC) of the most recent weekly review, or None."""
+        return self._get_last_session_date("weekly")
 
     # ─── User profile ──────────────────────────────────────────────────────────
 
@@ -485,6 +515,16 @@ class MemoryStore:
                     content    TEXT NOT NULL,
                     source     TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS goal_measurements (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    goal_task_id  TEXT NOT NULL,
+                    value         TEXT NOT NULL,
+                    numeric       REAL,
+                    recorded_at   TEXT NOT NULL
                 )
             """)
 

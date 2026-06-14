@@ -41,19 +41,34 @@ class TelegramClient:
 
     _MAX_LEN = 4096
 
-    def send_message(self, text: str) -> None:
+    def send_message(self, text: str, buttons: Optional[list] = None) -> None:
         """
         Sends a message to the configured user, splitting on paragraph breaks
         if the text exceeds Telegram's 4096-character limit.
 
+        buttons: optional list of (label, callback_data) pairs rendered as an inline
+        keyboard (two per row), attached to the final chunk. A tap produces a
+        callback_query update — see wait_for_reply / listener.handle_update.
+
         Raises:
             TelegramAPIError: If the API call fails.
         """
-        for chunk in self._split(text):
-            self._post("sendMessage", {
-                "chat_id": self._allowed_user_id,
-                "text": chunk,
-            })
+        chunks = self._split(text)
+        for i, chunk in enumerate(chunks):
+            payload = {"chat_id": self._allowed_user_id, "text": chunk}
+            if buttons and i == len(chunks) - 1:
+                payload["reply_markup"] = {"inline_keyboard": _button_rows(buttons)}
+            self._post("sendMessage", payload)
+
+    def answer_callback_query(self, callback_query_id: str, text: str = "") -> None:
+        """Acknowledges a button tap so Telegram stops showing the loading spinner."""
+        payload: dict = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        try:
+            self._post("answerCallbackQuery", payload)
+        except TelegramAPIError as e:
+            logger.warning(f"answerCallbackQuery failed: {e}")
 
     def _split(self, text: str) -> list[str]:
         """Split text into ≤4096-char chunks, preferring paragraph breaks."""
@@ -137,6 +152,15 @@ class TelegramClient:
                 try:
                     update = reply_queue.get(timeout=min(remaining, 1.0))
                 except queue.Empty:
+                    continue
+                cb = update.get("callback_query")
+                if cb:
+                    if cb.get("from", {}).get("id") != self._allowed_user_id:
+                        continue
+                    self.answer_callback_query(cb["id"])
+                    data = cb.get("data", "")
+                    if data:  # returned as raw callback_data; caller maps to reply text
+                        return data
                     continue
                 msg = update.get("message")
                 if not msg:  # ignore edited_message — edit events are not new replies
@@ -238,6 +262,12 @@ class TelegramClient:
             allowed_user_id=config["telegram"]["allowed_user_id"],
             error_chat_id=config["telegram"].get("error_chat_id"),
         )
+
+
+def _button_rows(buttons: list, per_row: int = 2) -> list:
+    """Lays out (label, callback_data) pairs into inline-keyboard rows."""
+    cells = [{"text": label, "callback_data": data} for label, data in buttons]
+    return [cells[i:i + per_row] for i in range(0, len(cells), per_row)]
 
 
 class TelegramAPIError(Exception):

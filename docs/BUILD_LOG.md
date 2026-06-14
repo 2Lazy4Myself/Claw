@@ -584,6 +584,33 @@ previously-untested daemon-adjacent paths. Added `.github/workflows/ci.yml`
 
 ---
 
+## Phase 6 — Usefulness: trajectory, capture, weekly review, buttons — 14 June 2026
+
+**Goal:** Extend what Claw *does* for the user, not just its robustness. Four features,
+each with unit coverage; suite 130 → 168 unit tests.
+
+- **Goal trajectory tracking** (`trajectory.py`, `memory.goal_measurements`). The
+  goal-update detector now records each stated measurement with a timestamp. A pure
+  trend calc projects rate-of-change to the target and compares it to the deadline
+  ("on pace for 85kg by ~12 Mar — ahead of the 1 Dec deadline"). Surfaced in the probe
+  goal context and the briefing goal summary.
+- **Task capture from chat** (`listener._handle_capture`, `todoist.create_task`). A new
+  "capture" intent: "remind me to…" / "add … to home" extracts content + project +
+  time-horizon section and creates the Todoist task; unknown values fall back to
+  configurable defaults (`behaviour.capture_default_project`/`_section`).
+- **Weekly review ritual** (`weekly.py`). On the configured day (default Sunday,
+  `schedule.weekly_review_day`) within the nightly window, Claw sends a reflection —
+  what moved, what stalled, goal trajectory, one question ahead — once per ISO week.
+  Failures escalate to the error channel.
+- **Inline-keyboard buttons** (`telegram_client`, `prompts.PROBE_ACTION_*`). Probe
+  messages carry ✅ Done / 😴 Tomorrow / 🤐 Not now / 💬 Talk buttons. A tap is mapped
+  to the equivalent reply text and fed through the existing reply path, so the
+  completion/snooze detectors interpret it with no special-casing. `wait_for_reply`
+  answers the callback and returns the tap during a live probe; `handle_update` routes
+  taps that arrive outside one.
+
+---
+
 ## Lessons Learned
 
 - **Haiku + JSON**: Always strip markdown code fences before parsing. Haiku wraps JSON in ` ```json ``` ` blocks despite being told not to. Fixed in `_select_task()`, `_write_habit_log()`, and `_detect_and_close()`.

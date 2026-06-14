@@ -34,9 +34,13 @@ from claw.config import load_config
 from claw.memory import MemoryStore, TaskMemory
 from claw.claude_client import ClaudeClient
 from claw.telegram_client import TelegramClient
-from claw.todoist_client import TodoistClient, from_env as todoist_from_env
+from claw.todoist_client import TodoistClient, SECTION_DISPLAY, from_env as todoist_from_env
 from claw import prompts
 from claw import situation
+
+# Valid capture targets — anything outside these falls back to the configured default.
+_CAPTURE_PROJECTS = {"work", "home"}
+_CAPTURE_SECTIONS = {"TODAY", "NEXT_FEW", "THIS_WEEK", "NEXT_WEEK", "THIS_MONTH", "UNPROCESSED"}
 
 # Matches any M-code (M1–M9) in a message — used to detect code replies
 _CODE_RE = re.compile(r'\b(M\d)\b', re.IGNORECASE)
@@ -59,10 +63,32 @@ def handle_update(
     Process one Telegram update dict. Called by the daemon dispatch loop.
     Filters for valid text messages from the allowed user, then routes.
     """
+    allowed_id = config["telegram"]["allowed_user_id"]
+
+    # Button tap (callback_query) — reaches here only when no probe is actively
+    # waiting (the live probe consumes taps via wait_for_reply). Acknowledge it and
+    # route the mapped reply text through the normal handler so a tap always acts.
+    cb = update.get("callback_query")
+    if cb:
+        if cb.get("from", {}).get("id") != allowed_id:
+            return
+        uid = update.get("update_id")
+        if uid is not None and memory.already_handled(uid):
+            logger.info(f"Skipping already-handled update {uid}")
+            return
+        telegram.answer_callback_query(cb["id"])
+        text = prompts.resolve_action_reply(cb.get("data", ""))
+        if text:
+            logger.info(f"Listener handling button tap: {text!r}")
+            _handle_message(text, todoist, memory, claude, telegram, config, reply_queue)
+        if uid is not None:
+            memory.mark_handled(uid)
+        return
+
     msg = update.get("message")
     if not msg:  # ignore edited_message — edits to prior messages are not new input
         return
-    if msg.get("from", {}).get("id") != config["telegram"]["allowed_user_id"]:
+    if msg.get("from", {}).get("id") != allowed_id:
         return
     uid = update.get("update_id")
     # Idempotency guard: Telegram delivery is at-least-once, so an update can be
@@ -167,6 +193,8 @@ def _handle_message(
         _handle_briefing(todoist, memory, claude, telegram, config)
     elif intent == "probe":
         _handle_probe(todoist, memory, claude, telegram, config, reply_queue)
+    elif intent == "capture":
+        _handle_capture(text, todoist, claude, telegram, config)
     else:
         # General path: gather the live task/goal/programme snapshot once, shared
         # by the free-form topic matcher and the conversational fallback so one
@@ -223,6 +251,61 @@ def _handle_probe(
     except Exception as e:
         logger.error(f"On-demand probe failed: {e}", exc_info=True)
         telegram.send_error(f"Probe failed: {e}")
+
+
+def _handle_capture(
+    text: str,
+    todoist: TodoistClient,
+    claude: ClaudeClient,
+    telegram: TelegramClient,
+    config: dict,
+) -> None:
+    """
+    Extracts a task from a capture message and creates it in Todoist.
+    The model picks project + time-horizon section; unknown values fall back to
+    the configured defaults so a bad classification still lands somewhere sensible.
+    """
+    behaviour = config.get("behaviour", {})
+    raw = claude.complete(
+        system=prompts.get_prompt("CAPTURE_EXTRACTION_SYSTEM"),
+        user=text,
+        max_tokens=200,
+        model=config["claude"]["selection_model"],
+    )
+    try:
+        parsed = json.loads(prompts.strip_json_fences(raw))
+    except (json.JSONDecodeError, ValueError):
+        logger.warning(f"Capture extraction returned non-JSON: {raw!r}")
+        telegram.send_message(
+            prompts.get_prompt("MSG_TASK_CAPTURE_FAILED").format(error="couldn't read that one")
+        )
+        return
+
+    content = (parsed.get("content") or "").strip()
+    if not content:
+        telegram.send_message(
+            prompts.get_prompt("MSG_TASK_CAPTURE_FAILED").format(error="no task found in that")
+        )
+        return
+
+    project = parsed.get("project")
+    if project not in _CAPTURE_PROJECTS:
+        project = behaviour.get("capture_default_project", "home")
+    section = parsed.get("section")
+    if section not in _CAPTURE_SECTIONS:
+        section = behaviour.get("capture_default_section", "TODAY")
+
+    try:
+        todoist.create_task(content, project, section)
+    except Exception as e:
+        logger.error(f"Task capture failed: {e}", exc_info=True)
+        telegram.send_message(prompts.get_prompt("MSG_TASK_CAPTURE_FAILED").format(error=str(e)))
+        return
+
+    logger.info(f"Captured task to {project}/{section}: {content!r}")
+    telegram.send_message(prompts.get_prompt("MSG_TASK_CAPTURED").format(
+        project=project, section=SECTION_DISPLAY.get(section, section), content=content,
+    ))
 
 
 def _handle_briefing(
@@ -323,7 +406,7 @@ def _handle_free_form_update(
     elif matched.topic_type == "goal":
         from claw.probe import _detect_and_update_goal
         try:
-            _detect_and_update_goal(matched.task, goals, history, "max_turns_reached", todoist, telegram, claude, config)
+            _detect_and_update_goal(matched.task, goals, history, "max_turns_reached", todoist, telegram, claude, config, memory)
         except Exception as e:
             logger.warning(f"Free-form goal update failed: {e}")
 

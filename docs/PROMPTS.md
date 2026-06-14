@@ -123,6 +123,16 @@ A few principles that should survive any prompt revision:
 - `LISTENER_INTENT_SYSTEM` — no change to the prompt itself; M-code replies now bypass it entirely via a regex fast-path before the Claude call.
 - `TASK_SELECTION_USER_TEMPLATE` — `{goal_context}` and `{previous_topic}` placeholders added (these were wired up in Phase 2/3 but the template reference hadn't been noted here).
 
+### Phase 6 — usefulness (14 June 2026)
+- `LISTENER_INTENT_SYSTEM` — added the `"capture"` intent (add a task/reminder).
+- `CAPTURE_EXTRACTION_SYSTEM` — new. Extracts {content, project, section} from a capture
+  message; defaults to home/TODAY when ambiguous.
+- `WEEKLY_REVIEW_SYSTEM` / `WEEKLY_REVIEW_USER_TEMPLATE` — new. The Sunday reflection:
+  what moved, what stalled, goal trajectory, one question ahead.
+- `PROBE_ACTION_BUTTONS` / `PROBE_ACTION_REPLIES` — inline-button labels and the
+  callback_data → reply-text map. A tap is treated as sending the mapped text, so the
+  existing detectors handle it. `MSG_TASK_CAPTURED` / `MSG_TASK_CAPTURE_FAILED` added.
+
 ### Cleanup (14 June 2026)
 - Added `MSG_*` **fixed-message** constants — short static lines Claw sends directly
   (not model output): `MSG_PROBE_ALL_CLEAR`, `MSG_PROBE_TIMEOUT_FALLBACK`,

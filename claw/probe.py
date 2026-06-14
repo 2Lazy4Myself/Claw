@@ -223,7 +223,7 @@ def _probe_one_task(
     # Suppress goal_line for fitness tasks: FITNESS_PROBE_SYSTEM is the trainer persona;
     # injecting a weight-goal frame alongside it makes Claude blend topics (the bug that
     # caused mixed questions about strength goals vs. weight targets).
-    g_line = "" if is_fitness else goal_line_for_task(task, goals or [])
+    g_line = "" if is_fitness else goal_line_for_task(task, goals or [], memory)
     goal_line = f"{g_line}\n" if g_line else ""
     if is_fitness:
         today_session = fitness_mod.get_today_session(active_programme, _date.today())
@@ -261,7 +261,7 @@ def _probe_one_task(
         logger.info("Pending message cap reached before send — skipping task")
         return "no_reply"
 
-    telegram.send_message(f"{msg_code}: {opening}")
+    telegram.send_message(f"{msg_code}: {opening}", buttons=prompts.PROBE_ACTION_BUTTONS)
 
     conversation_history = [
         {"role": "user", "content": opening_user_msg},
@@ -289,7 +289,7 @@ def _probe_one_task(
     _detect_and_close(task, subtasks, conversation_history, outcome, todoist, telegram, claude, config)
     snooze_until = _detect_and_snooze(task, conversation_history, outcome, telegram, claude, config)
     if goals:
-        _detect_and_update_goal(task, goals, conversation_history, outcome, todoist, telegram, claude, config)
+        _detect_and_update_goal(task, goals, conversation_history, outcome, todoist, telegram, claude, config, memory)
 
     raw_transcript = json.dumps(conversation_history)
     summary = _summarise_session(raw_transcript, task, outcome, claude, config)
@@ -351,7 +351,7 @@ def _run_checkin(
             active_programme, today_session, probe_compliance, topic.task
         )
     elif topic.topic_type == "goal":
-        topic_ctx = goal_line_for_task(topic.task, goals or [])
+        topic_ctx = goal_line_for_task(topic.task, goals or [], memory)
     else:
         topic_ctx = ""
 
@@ -403,7 +403,9 @@ def _run_conversation_loop(
     max_turns = config["behaviour"].get("max_probe_turns", _DEFAULT_MAX_PROBE_TURNS)
 
     for turn in range(max_turns):
-        reply = telegram.wait_for_reply(timeout, reply_queue)
+        # A button tap returns its callback_data ('act:*'); map it to the equivalent
+        # reply text so the rest of the loop (and the detectors) treat tap == typing.
+        reply = prompts.resolve_action_reply(telegram.wait_for_reply(timeout, reply_queue))
 
         if reply is None:
             # Inactivity timeout fired.
@@ -421,7 +423,7 @@ def _run_conversation_loop(
             messages=history,
             max_tokens=config["claude"]["probe_max_tokens"],
         )
-        telegram.send_message(followup)
+        telegram.send_message(followup, buttons=prompts.PROBE_ACTION_BUTTONS)
         history.append({"role": "assistant", "content": followup})
 
         if _is_conversation_closed(followup):

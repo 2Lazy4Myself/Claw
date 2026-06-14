@@ -59,6 +59,12 @@ def run_orchestrator(
         run_briefing(todoist, memory, claude, telegram, config)
         return
 
+    if _weekly_review_due(config, now_local, memory):
+        logger.info("Weekly review due — running")
+        from claw.weekly import run_weekly_review
+        run_weekly_review(todoist, memory, claude, telegram, config)
+        return
+
     if _nightly_window_open(config, now_local) and not _nightly_run_today(memory, today_local):
         logger.info("Nightly window open — running synthesis")
         from claw.nightly import run_nightly
@@ -110,6 +116,24 @@ def _nightly_window_open(config: dict, now_local: datetime) -> bool:
 def _nightly_run_today(memory: MemoryStore, today_iso: str) -> bool:
     """True if a nightly synthesis session has already been logged today (local date)."""
     return memory.get_last_nightly_date() == today_iso
+
+
+def _weekly_review_due(config: dict, now_local: datetime, memory: MemoryStore) -> bool:
+    """
+    True if today is the configured review day (default Sunday), the time is within the
+    nightly window, and no weekly review has run yet this ISO week.
+    """
+    review_day = config["schedule"].get("weekly_review_day", 6)  # Mon=0 … Sun=6
+    if now_local.weekday() != review_day:
+        return False
+    if not _nightly_window_open(config, now_local):
+        return False
+
+    last = memory.get_last_weekly_date()
+    if last is None:
+        return True
+    last_week = _date.fromisoformat(last).isocalendar()[:2]  # (iso_year, iso_week)
+    return last_week != now_local.date().isocalendar()[:2]
 
 
 def _minutes_since_last_session(memory: MemoryStore, now_utc: datetime) -> Optional[float]:

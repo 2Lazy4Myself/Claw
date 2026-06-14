@@ -188,6 +188,30 @@ class TodoistClient:
         """Marks a task complete in Todoist. Works for tasks and subtasks."""
         self._request_with_retry("POST", f"{self.BASE_URL}/tasks/{task_id}/close")
 
+    def create_task(
+        self, content: str, project_key: str, section_key: str, description: str = ""
+    ) -> str:
+        """
+        Creates a task in the given project/section and returns its Todoist id.
+
+        Raises ValueError for an unknown project or section key.
+        """
+        project = self._project(project_key)
+        if section_key not in project:
+            raise ValueError(
+                f"Unknown section {section_key!r} for project {project_key!r}. "
+                f"Valid: {[k for k in project if k != 'project_id']}"
+            )
+        payload = {
+            "content": content,
+            "project_id": project["project_id"],
+            "section_id": project[section_key],
+        }
+        if description:
+            payload["description"] = description
+        resp = self._request_with_retry("POST", f"{self.BASE_URL}/tasks", json=payload)
+        return resp.json().get("id", "")
+
     def get_subtasks(self, task_id: str) -> list[Task]:
         """Returns all non-completed subtasks of a given task."""
         today = date.today()

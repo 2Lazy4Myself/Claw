@@ -23,6 +23,7 @@ from typing import Optional
 
 from claw.todoist_client import Task
 from claw.memory import MemoryStore
+from claw import trajectory as trajectory_mod
 
 
 @dataclass
@@ -161,13 +162,33 @@ def build_goal_summary(
 
         lines.append(summary)
 
+        note = _trajectory_note(goal, memory)
+        if note:
+            lines.append(f"  {note}")
+
     return "\n".join(lines)
 
 
-def goal_line_for_task(task: Task, goals: list[GoalRecord]) -> str:
+def _trajectory_note(goal: GoalRecord, memory: Optional[MemoryStore]) -> str:
+    """Trend line for a goal from its recorded measurements, or '' if unavailable."""
+    if memory is None or not goal.target:
+        return ""
+    rows = memory.get_goal_measurements(goal.task_id)
+    points = [
+        trajectory_mod.to_measurement(r["value"], r["numeric"], r["recorded_at"])
+        for r in rows
+        if r["numeric"] is not None
+    ]
+    return trajectory_mod.trajectory_note(goal.target, goal.by, points, date.today())
+
+
+def goal_line_for_task(
+    task: Task, goals: list[GoalRecord], memory: Optional[MemoryStore] = None
+) -> str:
     """
     Returns a multi-line goal context block for probe prompt injection.
-    Empty string if the task has no linked goal.
+    Empty string if the task has no linked goal. When memory is provided and the
+    goal has measurement history, a trend line is appended.
     """
     goal = goal_for_task(task, goals)
     if goal is None:
@@ -192,5 +213,9 @@ def goal_line_for_task(task: Task, goals: list[GoalRecord]) -> str:
 
     if goal.status:
         lines.append(f"Status: {goal.status}")
+
+    note = _trajectory_note(goal, memory)
+    if note:
+        lines.append(note)
 
     return "\n".join(lines)

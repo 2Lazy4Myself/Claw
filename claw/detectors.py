@@ -22,8 +22,10 @@ from typing import Optional
 from claw import fitness as fitness_mod
 from claw.claude_client import ClaudeClient
 from claw.goals import GoalRecord, goal_for_task
+from claw.memory import MemoryStore
 from claw.telegram_client import TelegramClient
 from claw.todoist_client import TodoistClient, Task
+from claw.trajectory import parse_measurement
 from claw import prompts
 
 logger = logging.getLogger(__name__)
@@ -150,6 +152,7 @@ def _detect_and_update_goal(
     telegram: TelegramClient,
     claude: ClaudeClient,
     config: dict,
+    memory: Optional[MemoryStore] = None,
 ) -> None:
     """
     After a probe, detects if the user mentioned a concrete measurement update
@@ -190,6 +193,9 @@ def _detect_and_update_goal(
 
     try:
         todoist.update_goal_current(goal.task_id, value)
+        # Record the dated measurement so trajectory/trend can be computed (F1).
+        if memory is not None:
+            memory.add_goal_measurement(goal.task_id, str(value), parse_measurement(str(value)))
         telegram.send_message(f"Updated: {goal.name} now {value} (target {goal.target}).")
         logger.info(f"Updated goal {goal.task_id} Current: {value}")
     except Exception as e:
