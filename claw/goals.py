@@ -173,12 +173,7 @@ def _trajectory_note(goal: GoalRecord, memory: Optional[MemoryStore]) -> str:
     """Trend line for a goal from its recorded measurements, or '' if unavailable."""
     if memory is None or not goal.target:
         return ""
-    rows = memory.get_goal_measurements(goal.task_id)
-    points = [
-        trajectory_mod.to_measurement(r["value"], r["numeric"], r["recorded_at"])
-        for r in rows
-        if r["numeric"] is not None
-    ]
+    points = trajectory_mod.points_from_rows(memory.get_goal_measurements(goal.task_id))
     return trajectory_mod.trajectory_note(goal.target, goal.by, points, date.today())
 
 

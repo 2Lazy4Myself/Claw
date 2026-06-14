@@ -13,7 +13,11 @@ See docs/PROMPTS.md for design rationale and change history.
 
 from __future__ import annotations
 from pathlib import Path
+import json
+import logging
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 # ─── Briefing ────────────────────────────────────────────────────────────────
@@ -615,6 +619,19 @@ def strip_json_fences(raw: str) -> str:
         lines = stripped.split("\n")
         stripped = "\n".join(lines[1:-1]).strip()
     return stripped
+
+
+def parse_json_or_none(raw: str, label: str = "response") -> "dict | None":
+    """
+    Parses a model response as JSON (after stripping code fences), returning the dict
+    or None on failure with a logged warning. The single home for the parse-or-warn
+    pattern the detectors and listener all share; callers decide what None means.
+    """
+    try:
+        return json.loads(strip_json_fences(raw))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        logger.warning(f"{label} returned non-JSON: {raw!r}")
+        return None
 
 
 # ─── Prompt Loader ───────────────────────────────────────────────────────────

@@ -30,8 +30,6 @@ from claw import prompts
 
 logger = logging.getLogger(__name__)
 
-_strip_json_fences = prompts.strip_json_fences
-
 
 def _detect_and_close(
     task: Task,
@@ -62,10 +60,8 @@ def _detect_and_close(
         max_tokens=400,
         model=config["claude"]["selection_model"],
     )
-    try:
-        detection = json.loads(_strip_json_fences(raw))
-    except json.JSONDecodeError:
-        logger.warning(f"Completion detection returned non-JSON: {raw!r}")
+    detection = prompts.parse_json_or_none(raw, "Completion detection")
+    if detection is None:
         return
 
     action = detection.get("action", "none")
@@ -116,10 +112,8 @@ def _detect_and_snooze(
         max_tokens=400,
         model=config["claude"]["selection_model"],
     )
-    try:
-        detection = json.loads(_strip_json_fences(raw))
-    except json.JSONDecodeError:
-        logger.warning(f"Snooze detection returned non-JSON: {raw!r}")
+    detection = prompts.parse_json_or_none(raw, "Snooze detection")
+    if detection is None:
         return None
 
     if not detection.get("snooze"):
@@ -178,10 +172,8 @@ def _detect_and_update_goal(
         model=config["claude"]["selection_model"],
     )
 
-    try:
-        detection = json.loads(_strip_json_fences(raw))
-    except json.JSONDecodeError:
-        logger.warning(f"Goal update detection returned non-JSON: {raw!r}")
+    detection = prompts.parse_json_or_none(raw, "Goal update detection")
+    if detection is None:
         return
 
     if not detection.get("updated"):
@@ -257,10 +249,8 @@ def _write_habit_log(
         max_tokens=400,
         model=config["claude"]["selection_model"],
     )
-    try:
-        parsed = json.loads(_strip_json_fences(raw))
-    except json.JSONDecodeError:
-        logger.warning(f"Habit log returned non-JSON: {raw!r}")
+    parsed = prompts.parse_json_or_none(raw, "Habit log")
+    if parsed is None:
         return
 
     log_text = parsed.get("log")

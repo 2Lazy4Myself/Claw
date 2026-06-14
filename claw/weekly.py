@@ -97,12 +97,7 @@ def _build_goal_context(goals, memory: MemoryStore, today: date) -> str:
             line += f" ({g.current} → {g.target})"
         elif g.target:
             line += f" (target {g.target})"
-        rows = memory.get_goal_measurements(g.task_id)
-        points = [
-            trajectory_mod.to_measurement(r["value"], r["numeric"], r["recorded_at"])
-            for r in rows
-            if r["numeric"] is not None
-        ]
+        points = trajectory_mod.points_from_rows(memory.get_goal_measurements(g.task_id))
         note = trajectory_mod.trajectory_note(g.target, g.by, points, today)
         if note:
             line += f"\n  {note}"

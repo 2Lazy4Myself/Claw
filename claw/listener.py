@@ -272,10 +272,8 @@ def _handle_capture(
         max_tokens=200,
         model=config["claude"]["selection_model"],
     )
-    try:
-        parsed = json.loads(prompts.strip_json_fences(raw))
-    except (json.JSONDecodeError, ValueError):
-        logger.warning(f"Capture extraction returned non-JSON: {raw!r}")
+    parsed = prompts.parse_json_or_none(raw, "Capture extraction")
+    if parsed is None:
         telegram.send_message(
             prompts.get_prompt("MSG_TASK_CAPTURE_FAILED").format(error="couldn't read that one")
         )
@@ -345,10 +343,8 @@ def _pick_topic_for_free_message(
         max_tokens=200,
         model=config["claude"]["selection_model"],
     )
-    try:
-        detection = json.loads(prompts.strip_json_fences(raw))
-    except (json.JSONDecodeError, ValueError):
-        logger.warning(f"Free-form topic detection returned non-JSON: {raw!r}")
+    detection = prompts.parse_json_or_none(raw, "Free-form topic detection")
+    if detection is None:
         return None
 
     if not detection.get("matched") or detection.get("confidence") != "high":

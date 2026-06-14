@@ -108,3 +108,12 @@ def to_measurement(value: str, numeric: float, recorded_at: datetime) -> Measure
     if recorded_at.tzinfo is None:
         recorded_at = recorded_at.replace(tzinfo=timezone.utc)
     return Measurement(value=value, numeric=numeric, recorded_at=recorded_at)
+
+
+def points_from_rows(rows: list[dict]) -> list[Measurement]:
+    """Builds numeric Measurements from memory.get_goal_measurements() rows."""
+    return [
+        to_measurement(r["value"], r["numeric"], r["recorded_at"])
+        for r in rows
+        if r["numeric"] is not None
+    ]
