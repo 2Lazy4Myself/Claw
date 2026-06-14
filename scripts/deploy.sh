@@ -13,7 +13,8 @@
 #   4. smoke-check imports inside the candidate image
 #   5. verify the candidate's claw/*.py checksums vs the running container
 #   6. promote candidate -> claw:latest and swap the container, re-attaching the
-#      existing data/config/.env/logs mounts
+#      existing data/config/.env/logs mounts, then HEALTH-CHECK the new container
+#      and roll back to the previous image if it doesn't come up
 #
 # Pass --verify-only to stop after step 5: builds + verifies the candidate with
 # zero downtime — the running container and claw:latest are left untouched.
@@ -35,8 +36,9 @@ echo "[deploy] 1/6 pulling latest..."
 git pull --ff-only
 
 echo "[deploy] 2/6 running unit tests..."
+# Install runtime + dev (test) deps; test deps are no longer in requirements.txt.
 docker run --rm -v "$REPO_DIR":/app -w /app python:3.11-alpine \
-  sh -c "pip install -q -r requirements.txt && python -m pytest -m 'not integration' -q"
+  sh -c "pip install -q -e '.[dev]' && python -m pytest -m 'not integration' -q"
 
 echo "[deploy] 3/6 building candidate image ($CANDIDATE)..."
 docker build -t "$CANDIDATE" .
@@ -65,21 +67,63 @@ if [ "$VERIFY_ONLY" -eq 1 ]; then
   exit 0
 fi
 
+HEALTH_MARKER="Claw daemon started"   # printed by claw.main once the loop is up
+HEALTH_TIMEOUT=20                       # seconds to wait for the marker
+
+run_container() {  # $1 = image ref
+  docker run -d \
+    --name "$CONTAINER" \
+    --restart unless-stopped \
+    -e TZ=Europe/London \
+    -e PYTHONUNBUFFERED=1 \
+    -v "$APPDATA/src/.env":/app/.env \
+    -v "$APPDATA/src/config/config.yaml":/app/config/config.yaml \
+    -v "$APPDATA/data":/app/data \
+    -v "$APPDATA/logs":/logs \
+    "$1"
+}
+
+wait_for_healthy() {  # 0 if the marker appears and the container stays up, else 1
+  local i
+  for i in $(seq 1 "$HEALTH_TIMEOUT"); do
+    if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+      return 1  # container exited
+    fi
+    if docker logs "$CONTAINER" 2>&1 | grep -q "$HEALTH_MARKER"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 echo "[deploy] 6/6 promoting candidate and swapping container..."
+# Capture the current live image so we can roll back if the new one won't start.
+PREV_IMAGE_ID="$(docker image inspect "$IMAGE" -f '{{.Id}}' 2>/dev/null || true)"
+[ -n "$PREV_IMAGE_ID" ] && docker tag "$PREV_IMAGE_ID" claw:previous
+
 docker tag "$CANDIDATE" "$IMAGE"
 docker stop "$CONTAINER" 2>/dev/null || true
 docker rm "$CONTAINER" 2>/dev/null || true
-docker run -d \
-  --name "$CONTAINER" \
-  --restart unless-stopped \
-  -e TZ=Europe/London \
-  -e PYTHONUNBUFFERED=1 \
-  -v "$APPDATA/src/.env":/app/.env \
-  -v "$APPDATA/src/config/config.yaml":/app/config/config.yaml \
-  -v "$APPDATA/data":/app/data \
-  -v "$APPDATA/logs":/logs \
-  "$IMAGE"
+run_container "$IMAGE"
 
-echo "[deploy] done. Tailing startup logs:"
-sleep 3
-docker logs --tail 15 "$CONTAINER"
+echo "[deploy] waiting up to ${HEALTH_TIMEOUT}s for '$HEALTH_MARKER'..."
+if wait_for_healthy; then
+  echo "[deploy] healthy. Tailing startup logs:"
+  docker logs --tail 15 "$CONTAINER"
+else
+  echo "[deploy] NEW CONTAINER FAILED HEALTH CHECK — rolling back." >&2
+  docker logs --tail 30 "$CONTAINER" 2>&1 || true
+  docker stop "$CONTAINER" 2>/dev/null || true
+  docker rm "$CONTAINER" 2>/dev/null || true
+  if [ -n "$PREV_IMAGE_ID" ]; then
+    docker tag claw:previous "$IMAGE"
+    run_container "$IMAGE"
+    echo "[deploy] rolled back to the previous image. Tailing logs:" >&2
+    sleep 3
+    docker logs --tail 15 "$CONTAINER" 2>&1 || true
+  else
+    echo "[deploy] no previous image to roll back to — '$CONTAINER' is down." >&2
+  fi
+  exit 1
+fi

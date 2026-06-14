@@ -12,16 +12,21 @@ Called by the orchestrator once per evening (after nightly_synthesis_after time)
 """
 
 from __future__ import annotations
+import glob
 import logging
+import os
 import re
 import sys
 import uuid
 from datetime import datetime, timezone
 
+from typing import Optional
+
 from claw.claude_client import ClaudeClient
 from claw.config import load_config
 from claw.memory import MemoryStore, TaskMemory, SessionRecord
 from claw.synthesis import synthesise_task_context, synthesise_user_profile
+from claw.telegram_client import TelegramClient
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +37,7 @@ def run_nightly(
     memory: MemoryStore,
     claude: ClaudeClient,
     config: dict,
+    telegram: Optional[TelegramClient] = None,
 ) -> None:
     """
     Runs the full nightly synthesis pass. All dependencies injected for testability.
@@ -79,6 +85,23 @@ def run_nightly(
     if pruned:
         logger.info(f"Pruned {pruned} old chat turns")
 
+    # ── Off-disk backup ───────────────────────────────────────────────────────
+    # The DB is the only irreplaceable state Claw holds. Snapshot it nightly to a
+    # second location (ideally a different disk) so a single failure can't erase it.
+    backup_dir = config["memory"].get("backup_dir")
+    if backup_dir:
+        try:
+            dest = _run_backup(memory, backup_dir, config["memory"].get("backup_retention", 7))
+            logger.info(f"DB backed up to {dest}")
+        except Exception as e:
+            # The DB is the only irreplaceable state — a failed backup must be loud.
+            logger.error(f"DB backup failed: {e}", exc_info=True)
+            if telegram is not None:
+                try:
+                    telegram.send_error(f"Nightly DB backup failed: {e}")
+                except Exception:
+                    pass
+
     # ── Log the run ───────────────────────────────────────────────────────────
     n_tasks = len(candidates)
     run_summary = (
@@ -96,6 +119,27 @@ def run_nightly(
         summary=run_summary,
         raw_transcript=None,
     ))
+
+
+def _run_backup(memory: MemoryStore, backup_dir: str, retention: int) -> str:
+    """Writes a dated DB snapshot into backup_dir and prunes to the last `retention`."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    dest = os.path.join(backup_dir, f"claw-{stamp}.db")
+    memory.backup(dest)
+    _prune_backups(backup_dir, retention)
+    return dest
+
+
+def _prune_backups(backup_dir: str, retention: int) -> None:
+    """Keeps only the most recent `retention` claw-*.db snapshots."""
+    if retention <= 0:
+        return
+    snapshots = sorted(glob.glob(os.path.join(backup_dir, "claw-*.db")))
+    for old in snapshots[:-retention]:
+        try:
+            os.remove(old)
+        except OSError:
+            pass
 
 
 def _prune_notes(notes: str, max_entries: int) -> str:

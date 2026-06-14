@@ -16,10 +16,18 @@ All timestamps stored as ISO 8601 strings in UTC.
 """
 
 from __future__ import annotations
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Iterator, Optional
+import logging
+import os
 import sqlite3
+
+logger = logging.getLogger(__name__)
+
+# Bump when adding a migration step in _migrate(). Tracked via PRAGMA user_version.
+_SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -59,7 +67,7 @@ class MemoryStore:
 
     def get_task_memory(self, task_id: str) -> Optional[TaskMemory]:
         """Returns memory for a task, or None if never discussed."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM task_memory WHERE task_id = ?", (task_id,)
             ).fetchone()
@@ -69,7 +77,7 @@ class MemoryStore:
 
     def upsert_task_memory(self, memory: TaskMemory) -> None:
         """Creates or updates the memory record for a task."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO task_memory
@@ -97,7 +105,7 @@ class MemoryStore:
 
     def log_session(self, session: SessionRecord) -> None:
         """Appends a session record. Sessions are append-only."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO sessions
@@ -118,7 +126,7 @@ class MemoryStore:
 
     def get_recent_sessions(self, n: int = 5) -> list[SessionRecord]:
         """Returns the n most recent sessions, newest first."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?", (n,)
             ).fetchall()
@@ -130,7 +138,7 @@ class MemoryStore:
         role: "user" | "assistant". source: "general" | "probe" — provenance
         only, used for debugging; reads don't filter on it.
         """
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             conn.execute(
                 "INSERT INTO chat_turns (role, content, source, created_at) "
                 "VALUES (?, ?, ?, ?)",
@@ -145,7 +153,7 @@ class MemoryStore:
         to session-summary context. At most `limit` turns (the most recent).
         """
         cutoff = _dt_to_str(datetime.now(timezone.utc) - timedelta(minutes=within_minutes))
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 "SELECT role, content FROM chat_turns "
                 "WHERE created_at >= ? ORDER BY id DESC LIMIT ?",
@@ -157,7 +165,7 @@ class MemoryStore:
     def prune_chat_turns(self, older_than_days: int) -> int:
         """Delete chat turns older than N days. Returns rows removed."""
         cutoff = _dt_to_str(datetime.now(timezone.utc) - timedelta(days=older_than_days))
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             cur = conn.execute("DELETE FROM chat_turns WHERE created_at < ?", (cutoff,))
             return cur.rowcount
 
@@ -165,7 +173,7 @@ class MemoryStore:
         """Returns {task_id: TaskMemory} for all known IDs. Missing IDs are absent."""
         if not task_ids:
             return {}
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             placeholders = ",".join("?" * len(task_ids))
             rows = conn.execute(
                 f"SELECT * FROM task_memory WHERE task_id IN ({placeholders})",
@@ -175,7 +183,7 @@ class MemoryStore:
 
     def get_last_session_at(self) -> Optional[datetime]:
         """Returns started_at of the most recent session (any type), UTC-aware."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT started_at FROM sessions ORDER BY started_at DESC LIMIT 1"
             ).fetchone()
@@ -192,7 +200,7 @@ class MemoryStore:
 
     def get_task_sessions(self, task_id: str, limit: int = 5) -> list[SessionRecord]:
         """Returns the N most recent probe sessions for a specific task, newest first."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM sessions WHERE task_id = ? ORDER BY started_at DESC LIMIT ?",
                 (task_id, limit),
@@ -205,7 +213,7 @@ class MemoryStore:
         Pass session_type to restrict to e.g. 'probe' sessions only.
         """
         cutoff = _dt_to_str(datetime.now(timezone.utc) - timedelta(days=days))
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             if session_type:
                 rows = conn.execute(
                     "SELECT * FROM sessions WHERE started_at >= ? AND session_type = ? "
@@ -221,7 +229,7 @@ class MemoryStore:
 
     def get_all_task_ids_with_probe_count(self, min_count: int) -> list[tuple[str, int]]:
         """Returns [(task_id, probe_count)] for tasks probed at least min_count times."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 "SELECT task_id, probe_count FROM task_memory WHERE probe_count >= ?",
                 (min_count,),
@@ -236,7 +244,7 @@ class MemoryStore:
 
     def upsert_user_profile(self, summary: str) -> None:
         """Stores (or replaces) the synthesised user trait profile."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO user_profile (id, summary, synthesised_at)
@@ -250,7 +258,7 @@ class MemoryStore:
 
     def get_user_profile(self) -> Optional[str]:
         """Returns the current user profile summary, or None if not yet synthesised."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             row = conn.execute("SELECT summary FROM user_profile WHERE id = 1").fetchone()
         return row["summary"] if row else None
 
@@ -267,7 +275,7 @@ class MemoryStore:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=min_hours)
         cutoff_str = _dt_to_str(cutoff)
 
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             placeholders = ",".join("?" * len(task_ids))
             rows = conn.execute(
                 f"""
@@ -288,7 +296,7 @@ class MemoryStore:
         Assigns the lowest free M-code (M1–M9) for an outbound probe/follow-up.
         Returns the code string, or None if all slots up to cap are already pending.
         """
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             pending_codes = {
                 row["code"] for row in conn.execute(
                     "SELECT code FROM pending_messages WHERE status = 'pending'"
@@ -311,7 +319,7 @@ class MemoryStore:
         """Marks a pending message as answered. Returns the row or None if not found."""
         code = code.upper()
         now = _dt_to_str(datetime.now(timezone.utc))
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM pending_messages WHERE code = ? AND status = 'pending'",
                 (code,),
@@ -326,7 +334,7 @@ class MemoryStore:
 
     def pending_count(self) -> int:
         """Returns the number of pending (unanswered) M-coded messages."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) AS n FROM pending_messages WHERE status = 'pending'"
             ).fetchone()
@@ -334,7 +342,7 @@ class MemoryStore:
 
     def get_pending_messages(self) -> list[dict]:
         """Returns all pending message rows, ordered by code."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM pending_messages WHERE status = 'pending' ORDER BY code"
             ).fetchall()
@@ -344,7 +352,7 @@ class MemoryStore:
 
     def _get_last_session_date(self, session_type: str) -> Optional[str]:
         """Returns the local date (YYYY-MM-DD UTC) of the most recent session of a given type."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT started_at FROM sessions WHERE session_type = ? "
                 "ORDER BY started_at DESC LIMIT 1",
@@ -361,7 +369,7 @@ class MemoryStore:
 
     def get_listener_offset(self) -> Optional[int]:
         """Returns the last processed Telegram update_id + 1, or None if never set."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT value FROM listener_state WHERE key = 'telegram_offset'"
             ).fetchone()
@@ -371,7 +379,7 @@ class MemoryStore:
 
     def set_listener_offset(self, offset: int) -> None:
         """Persists the next Telegram update offset."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO listener_state (key, value) VALUES ('telegram_offset', ?)
@@ -387,7 +395,7 @@ class MemoryStore:
 
     def already_handled(self, update_id: int) -> bool:
         """True if this Telegram update_id has already been processed."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT 1 FROM handled_updates WHERE update_id = ?", (update_id,)
             ).fetchone()
@@ -395,7 +403,7 @@ class MemoryStore:
 
     def mark_handled(self, update_id: int) -> None:
         """Records a Telegram update_id as processed, pruning old rows to stay bounded."""
-        with self._get_connection() as conn:
+        with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO handled_updates (update_id, handled_at) VALUES (?, ?)
@@ -410,7 +418,11 @@ class MemoryStore:
             )
 
     def _init_schema(self) -> None:
-        with self._get_connection() as conn:
+        with self._connect() as conn:
+            # WAL improves crash resilience and lets reads proceed during writes.
+            # The mode is persisted in the DB file, so this only needs setting once;
+            # in-memory DBs ignore it harmlessly.
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS task_memory (
                     task_id TEXT PRIMARY KEY,
@@ -422,11 +434,6 @@ class MemoryStore:
                     context_summary TEXT
                 )
             """)
-            # Migrate existing DBs that predate context_summary
-            try:
-                conn.execute("ALTER TABLE task_memory ADD COLUMN context_summary TEXT")
-            except sqlite3.OperationalError:
-                pass  # column already exists
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -481,10 +488,74 @@ class MemoryStore:
                 )
             """)
 
+            self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """
+        Applies ordered schema migrations, tracked via PRAGMA user_version so each
+        step runs once and the DB's schema level is visible/inspectable. Add a new
+        `if version < N:` block and bump _SCHEMA_VERSION for each future change.
+        """
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version >= _SCHEMA_VERSION:
+            return
+
+        if version < 1:
+            # v1: context_summary on task_memory (already in the CREATE for new DBs;
+            # this back-fills DBs created before the column existed).
+            try:
+                conn.execute("ALTER TABLE task_memory ADD COLUMN context_summary TEXT")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
+        conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        logger.info(f"Schema migrated: user_version {version} → {_SCHEMA_VERSION}")
+
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """
+        Yields a connection that commits on success, rolls back on exception, and
+        is always closed. Replaces the bare `with self._get_connection()` pattern,
+        which committed but leaked the connection (relying on GC to close it).
+        """
+        conn = self._get_connection()
+        try:
+            with conn:  # commit on success / rollback on exception
+                yield conn
+        finally:
+            conn.close()
+
+    def backup(self, dest_path: str) -> str:
+        """
+        Writes a consistent snapshot of the DB to dest_path using SQLite's online
+        backup API — safe to call while the daemon is live — then verifies the copy
+        with PRAGMA integrity_check.
+
+        Returns the destination path. Raises if the integrity check does not pass.
+        """
+        dest_dir = os.path.dirname(dest_path)
+        if dest_dir:
+            os.makedirs(dest_dir, exist_ok=True)
+
+        src = self._get_connection()
+        try:
+            dest = sqlite3.connect(dest_path)
+            try:
+                with dest:
+                    src.backup(dest)
+                row = dest.execute("PRAGMA integrity_check").fetchone()
+                if not row or row[0] != "ok":
+                    raise RuntimeError(f"Backup integrity check failed: {row}")
+            finally:
+                dest.close()
+        finally:
+            src.close()
+        return dest_path
 
     def _row_to_task_memory(self, row: sqlite3.Row) -> TaskMemory:
         return TaskMemory(

@@ -7,12 +7,10 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install production dependencies directly (no editable install needed in prod)
-RUN pip install --no-cache-dir \
-    "openai>=1.0.0" \
-    "requests>=2.31.0" \
-    "python-dotenv>=1.0.0" \
-    "pyyaml>=6.0"
+# Install production dependencies from the pinned runtime manifest (single source
+# of truth; test deps live in the [dev] extra and are not installed in prod).
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY claw/ claw/
 

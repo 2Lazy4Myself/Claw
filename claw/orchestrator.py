@@ -62,7 +62,7 @@ def run_orchestrator(
     if _nightly_window_open(config, now_local) and not _nightly_run_today(memory, today_local):
         logger.info("Nightly window open — running synthesis")
         from claw.nightly import run_nightly
-        run_nightly(memory, claude, config)
+        run_nightly(memory, claude, config, telegram)
         return
 
     minutes = _minutes_since_last_session(memory, now_utc)

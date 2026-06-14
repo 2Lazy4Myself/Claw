@@ -118,12 +118,23 @@ def main() -> None:
 
         try:
             update = incoming.get(timeout=2)
+        except queue.Empty:
+            continue
+
+        # Guard the dispatch: a listener exception (e.g. a Claude error during
+        # intent classification) must not escape the loop and kill the daemon.
+        # Fail loudly to the error channel, then keep serving.
+        try:
             listener.handle_update(
                 update, todoist, memory, claude, telegram, config,
                 reply_queue=incoming,
             )
-        except queue.Empty:
-            pass
+        except Exception as e:
+            logger.error(f"Listener dispatch failed: {e}", exc_info=True)
+            try:
+                telegram.send_error(f"Listener error: {e}")
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

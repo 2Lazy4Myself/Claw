@@ -1,6 +1,7 @@
-openai>=1.0.0
-requests>=2.31.0
-python-dotenv>=1.0.0
-pyyaml>=6.0
-pytest>=8.0.0
-pytest-mock>=3.12.0
+# Runtime dependencies only — installed into the production image.
+# Test deps live in the [dev] extra in pyproject.toml (install: pip install -e ".[dev]").
+# Pinned to known-good majors with upper bounds; bump deliberately.
+openai>=2.41,<3.0
+requests>=2.34,<3.0
+python-dotenv>=1.2,<2.0
+pyyaml>=6.0,<7.0

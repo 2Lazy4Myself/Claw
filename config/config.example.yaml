@@ -40,6 +40,13 @@ memory:
   # Use an absolute path or relative to the project root.
   db_path: "data/claw.db"
 
+  # Optional: directory for nightly DB snapshots. Point this at a different disk
+  # (or a bind mount that's externally backed up) so a single failure can't erase
+  # all accumulated memory. Leave unset to disable backups.
+  # backup_dir: "/mnt/backups/claw"
+  # How many dated snapshots to keep (older ones are pruned). Default 7.
+  backup_retention: 7
+
   # How many days of task history to include in Claude's context.
   # More history = better memory, higher token usage.
   task_history_days: 30

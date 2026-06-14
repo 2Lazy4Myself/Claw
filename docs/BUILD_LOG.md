@@ -537,6 +537,53 @@ Write nightly synthesized memory summaries (from Phase 6) as markdown files into
 
 ---
 
+## Reliability, Tests & Cleanup Hardening — 14 June 2026
+
+**Goal:** Address an assessment of the codebase — fix latent bugs, close the test
+gap on Phase 5+ modules, harden ops, and reduce the largest source files. No
+behaviour change for the user beyond increased robustness.
+
+**Correctness:**
+- Fixed an `UnboundLocalError` in `probe.py`: `user_profile` was referenced in the
+  watchlist check-in branch before assignment, so every overdue check-in crashed.
+- `main.py` now guards `listener.handle_update` — a Claude error during intent
+  classification previously escaped the loop and killed the whole daemon.
+- `config.py` validates all `HH:MM` schedule fields at startup (fail fast, not mid-tick).
+
+**Persistence (`memory.py`):**
+- Enabled `PRAGMA journal_mode=WAL`.
+- Added a `_connect()` context manager that commits **and** closes (the old `with
+  self._get_connection()` pattern leaked connections, relying on GC).
+- Formalised migrations via `PRAGMA user_version` (`_migrate()` + `_SCHEMA_VERSION`);
+  the context_summary back-fill is now an ordered, visible v1 step.
+- Nightly off-disk DB backup (`MemoryStore.backup()` + `_run_backup`/retention in
+  `nightly.py`), gated on `memory.backup_dir`. A failed backup escalates to the
+  Telegram error channel.
+
+**Tests & CI:** test count 91 → 137. New `test_probe.py`, `test_listener.py`,
+`test_watchlist.py`, `test_nightly.py`, `test_backup.py`, `test_memory.py` cover the
+previously-untested daemon-adjacent paths. Added `.github/workflows/ci.yml`
+(unit tests on push/PR).
+
+**Cleanup:**
+- Split `probe.py` (951 → ~600 lines): extracted `selection.py` (task selection) and
+  `detectors.py` (post-conversation close/snooze/goal/habit JSON detectors). Names are
+  re-exported from `probe.py` so callers/tests are unaffected.
+- Moved Claw's fixed "voice" strings (all-clear, timeout close, empty briefing, M-code
+  acks) into `prompts.py` as overridable `MSG_*` constants.
+- Pinned dependencies to known-good majors with upper bounds; moved `pytest` to a
+  `[dev]` extra; `Dockerfile` installs from `requirements.txt` (single source). Fixed an
+  invalid `build-backend` in `pyproject.toml` that broke `pip install -e .`.
+- `deploy.sh` health-checks the new container (waits for "Claw daemon started") and
+  rolls back to the previous image on failure.
+- Removed the redundant root `BUILD_LOG.md` planning stub; created `docs/PROMPTS.md`.
+
+**Current model config** (supersedes the LiteLLM-era aliases noted above; see
+`config/config.example.yaml`): `claude.model: claude-opus-4.7` (conversation/briefing),
+`claude.selection_model: gemini-3.1-flash` (selection, summaries, detection).
+
+---
+
 ## Lessons Learned
 
 - **Haiku + JSON**: Always strip markdown code fences before parsing. Haiku wraps JSON in ` ```json ``` ` blocks despite being told not to. Fixed in `_select_task()`, `_write_habit_log()`, and `_detect_and_close()`.

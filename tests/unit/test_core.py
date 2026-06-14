@@ -388,6 +388,53 @@ class TestConfigValidation:
         with pytest.raises(ValueError, match="base_url"):
             _validate(config)
 
+    def _config_with_schedule(self, **schedule_overrides):
+        schedule = {
+            "timezone": "Europe/London",
+            "active_window_start": "07:00",
+            "active_window_end": "21:00",
+            "briefing_window_end": "10:00",
+            "min_minutes_between_sessions": 90,
+        }
+        schedule.update(schedule_overrides)
+        return {
+            "telegram": {"allowed_user_id": 123},
+            "todoist": {"projects": ["work"]},
+            "memory": {"db_path": "data/claw.db"},
+            "litellm": {"base_url": "http://localhost:4000"},
+            "claude": {"model": "claude-sonnet-4.6", "selection_model": "llama-3.3-70b"},
+            "schedule": schedule,
+        }
+
+    def test_optional_nightly_time_valid_passes(self):
+        from claw.config import _validate
+        _validate(self._config_with_schedule(nightly_synthesis_after="20:30"))
+
+    def test_non_time_string_raises(self):
+        from claw.config import _validate
+        with pytest.raises(ValueError, match="active_window_start"):
+            _validate(self._config_with_schedule(active_window_start="morning"))
+
+    def test_missing_colon_raises(self):
+        from claw.config import _validate
+        with pytest.raises(ValueError, match="briefing_window_end"):
+            _validate(self._config_with_schedule(briefing_window_end="1000"))
+
+    def test_out_of_range_hour_raises(self):
+        from claw.config import _validate
+        with pytest.raises(ValueError, match="range"):
+            _validate(self._config_with_schedule(active_window_end="25:00"))
+
+    def test_out_of_range_minute_raises(self):
+        from claw.config import _validate
+        with pytest.raises(ValueError, match="range"):
+            _validate(self._config_with_schedule(active_window_start="07:75"))
+
+    def test_non_string_time_raises(self):
+        from claw.config import _validate
+        with pytest.raises(ValueError, match="active_window_start"):
+            _validate(self._config_with_schedule(active_window_start=700))
+
 
 # ─── Snooze detection helpers ─────────────────────────────────────────────────
 

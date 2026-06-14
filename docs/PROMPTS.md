@@ -122,3 +122,11 @@ A few principles that should survive any prompt revision:
 ### Phase 4 (20 May 2026)
 - `LISTENER_INTENT_SYSTEM` — no change to the prompt itself; M-code replies now bypass it entirely via a regex fast-path before the Claude call.
 - `TASK_SELECTION_USER_TEMPLATE` — `{goal_context}` and `{previous_topic}` placeholders added (these were wired up in Phase 2/3 but the template reference hadn't been noted here).
+
+### Cleanup (14 June 2026)
+- Added `MSG_*` **fixed-message** constants — short static lines Claw sends directly
+  (not model output): `MSG_PROBE_ALL_CLEAR`, `MSG_PROBE_TIMEOUT_FALLBACK`,
+  `MSG_BRIEFING_EMPTY`, `MSG_CODES_CLOSED`/`MSG_CODES_UNKNOWN` (M-code acks),
+  `MSG_FREEFORM_LOGGED`. Moved out of `probe.py`/`listener.py`/`briefing.py` so Claw's
+  voice is consistent and overridable via `config/prompts.yaml` like the prompts.
+  Templates use `{named}` fields filled by the caller.

@@ -204,9 +204,9 @@ def _handle_code_replies(
             logger.info(f"No pending message found for {code}")
 
     if closed:
-        telegram.send_message(f"Got it — {', '.join(closed)} closed.")
+        telegram.send_message(prompts.get_prompt("MSG_CODES_CLOSED").format(codes=", ".join(closed)))
     if unknown:
-        telegram.send_message(f"No pending message for {', '.join(unknown)}.")
+        telegram.send_message(prompts.get_prompt("MSG_CODES_UNKNOWN").format(codes=", ".join(unknown)))
 
 
 def _handle_probe(
@@ -338,7 +338,7 @@ def _handle_free_form_update(
         snoozed_until=existing.snoozed_until if existing else None,
     ))
 
-    telegram.send_message(f"Noted — logged for {matched.topic_name}.")
+    telegram.send_message(prompts.get_prompt("MSG_FREEFORM_LOGGED").format(topic=matched.topic_name))
     return True
 
 

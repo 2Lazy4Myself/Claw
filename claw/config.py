@@ -76,3 +76,28 @@ def _validate(config: dict) -> None:
                     f"Missing required config key: {'.'.join(str(k) for k in key_path)}"
                 )
             node = node[key]
+
+    # Validate schedule time fields up front so malformed values fail loudly at
+    # startup, not mid-tick deep inside the orchestrator (orchestrator._parse_hhmm).
+    schedule = config["schedule"]
+    time_fields = [
+        "active_window_start",
+        "active_window_end",
+        "briefing_window_end",
+        "nightly_synthesis_after",  # optional; validated only if present
+    ]
+    for field in time_fields:
+        if field in schedule:
+            _validate_hhmm(f"schedule.{field}", schedule[field])
+
+
+def _validate_hhmm(name: str, value) -> None:
+    """Raises ValueError unless value is a well-formed 'HH:MM' 24-hour time."""
+    if not isinstance(value, str):
+        raise ValueError(f"Config {name} must be an 'HH:MM' string, got {value!r}")
+    parts = value.split(":")
+    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+        raise ValueError(f"Config {name} must be 'HH:MM', got {value!r}")
+    hour, minute = int(parts[0]), int(parts[1])
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"Config {name} out of range (00:00–23:59), got {value!r}")

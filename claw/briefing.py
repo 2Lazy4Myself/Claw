@@ -62,7 +62,7 @@ def run_briefing(
 
     if not all_tasks:
         logger.info("No tasks today — sending all-clear")
-        telegram.send_message("Nothing on the board today. Enjoy the space.")
+        telegram.send_message(prompts.get_prompt("MSG_BRIEFING_EMPTY"))
         return
 
     # 2. Fetch recent memory context
