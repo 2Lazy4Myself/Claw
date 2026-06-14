@@ -63,8 +63,9 @@ litellm:
 # ─── Claude ──────────────────────────────────────────────────────────────────
 claude:
   # Model for briefing and probe conversations — where tone and empathy matter.
-  # This alias is configured in LiteLLM and routes to Anthropic claude-sonnet-4-6.
-  model: "claude-opus-4.7"
+  # Must be an alias the LiteLLM proxy actually routes (check: GET /v1/models, then
+  # test a /chat/completions call — some listed aliases 400 at call time).
+  model: "claude-sonnet-4.6"
 
   # Model for task selection and session summarisation — structured output, no creativity needed.
   # gemini-3.1-flash routes to google/gemini-2.5-flash — fast and cheap ($0.15/$0.60 per MTok).

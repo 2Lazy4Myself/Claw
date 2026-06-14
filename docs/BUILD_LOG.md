@@ -579,8 +579,10 @@ previously-untested daemon-adjacent paths. Added `.github/workflows/ci.yml`
 - Removed the redundant root `BUILD_LOG.md` planning stub; created `docs/PROMPTS.md`.
 
 **Current model config** (supersedes the LiteLLM-era aliases noted above; see
-`config/config.example.yaml`): `claude.model: claude-opus-4.7` (conversation/briefing),
+`config/config.example.yaml`): `claude.model: claude-sonnet-4.6` (conversation/briefing),
 `claude.selection_model: gemini-3.1-flash` (selection, summaries, detection).
+Note: `claude-opus-4.7` is *listed* by the proxy's `/v1/models` but 400s at call time —
+always test a real `/chat/completions` call, not just the model list, when choosing an alias.
 
 ---
 
