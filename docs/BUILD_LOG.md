@@ -604,6 +604,11 @@ each with unit coverage; suite 130 → 168 unit tests.
   `schedule.weekly_review_day`) within the nightly window, Claw sends a reflection —
   what moved, what stalled, goal trajectory, one question ahead — once per ISO week.
   Failures escalate to the error channel.
+- **Spontaneous measurement capture** (`listener._handle_measurement_capture`). A
+  measurement stated out of the blue ("my waist is 109cm") on the general-chat path now
+  updates the matching goal's `Current` and records a trajectory point — previously this
+  only happened inside a goal probe or an overdue watchlist match. Reuses the F1 plumbing
+  (`update_goal_current`, `add_goal_measurement`, `trajectory.*`).
 - **Inline-keyboard buttons** (`telegram_client`, `prompts.PROBE_ACTION_*`). Probe
   messages carry ✅ Done / 😴 Tomorrow / 🤐 Not now / 💬 Talk buttons. A tap is mapped
   to the equivalent reply text and fed through the existing reply path, so the

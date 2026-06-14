@@ -132,6 +132,9 @@ A few principles that should survive any prompt revision:
 - `PROBE_ACTION_BUTTONS` / `PROBE_ACTION_REPLIES` — inline-button labels and the
   callback_data → reply-text map. A tap is treated as sending the mapped text, so the
   existing detectors handle it. `MSG_TASK_CAPTURED` / `MSG_TASK_CAPTURE_FAILED` added.
+- `MEASUREMENT_CAPTURE_SYSTEM` / `MSG_MEASUREMENT_LOGGED` — detect a spontaneous goal
+  measurement ("my waist is 109cm") on the general-chat path and write it back +
+  record a trajectory point, even when the goal isn't an overdue watchlist topic.
 
 ### Cleanup (14 June 2026)
 - Added `MSG_*` **fixed-message** constants — short static lines Claw sends directly

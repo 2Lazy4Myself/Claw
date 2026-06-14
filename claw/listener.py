@@ -37,6 +37,7 @@ from claw.telegram_client import TelegramClient
 from claw.todoist_client import TodoistClient, SECTION_DISPLAY, from_env as todoist_from_env
 from claw import prompts
 from claw import situation
+from claw import trajectory as trajectory_mod
 
 # Valid capture targets — anything outside these falls back to the configured default.
 _CAPTURE_PROJECTS = {"work", "home"}
@@ -209,6 +210,12 @@ def _handle_message(
             )
             if matched:
                 return
+            # A spontaneous measurement ("my waist is 109cm") updates the matching
+            # goal even when it isn't an overdue watchlist topic.
+            if _handle_measurement_capture(
+                text, goals, todoist, memory, claude, telegram, config
+            ):
+                return
         _handle_general(
             text, all_tasks, habits, goals, programme,
             memory, claude, telegram, config,
@@ -251,6 +258,70 @@ def _handle_probe(
     except Exception as e:
         logger.error(f"On-demand probe failed: {e}", exc_info=True)
         telegram.send_error(f"Probe failed: {e}")
+
+
+def _handle_measurement_capture(
+    text: str,
+    goals: list,
+    todoist: TodoistClient,
+    memory: MemoryStore,
+    claude: ClaudeClient,
+    telegram: TelegramClient,
+    config: dict,
+) -> bool:
+    """
+    Detects a spontaneous measurement for a tracked goal and writes it back —
+    updating the goal's Current field, recording a trajectory point, and confirming
+    (with a trend line once there's enough history). Returns True if handled.
+
+    Unlike the probe/free-form paths, this fires regardless of whether the goal is
+    an overdue watchlist topic, so a one-off "my waist is 109cm" always lands.
+    """
+    measurable = [g for g in goals if getattr(g, "target", None)]
+    if not measurable:
+        return False
+
+    goal_list = "\n".join(
+        f"- {g.name} (target {g.target}, current {g.current or 'unknown'})"
+        for g in measurable
+    )
+    raw = claude.complete(
+        system=prompts.get_prompt("MEASUREMENT_CAPTURE_SYSTEM"),
+        user=f"Goals:\n{goal_list}\n\nMessage: {text}",
+        max_tokens=200,
+        model=config["claude"]["selection_model"],
+    )
+    parsed = prompts.parse_json_or_none(raw, "Measurement capture")
+    if not parsed or not parsed.get("matched"):
+        return False
+
+    value = parsed.get("value")
+    goal = next(
+        (g for g in measurable if g.name.lower() == str(parsed.get("goal", "")).lower()),
+        None,
+    )
+    if goal is None or not value:
+        return False
+
+    try:
+        todoist.update_goal_current(goal.task_id, str(value))
+        memory.add_goal_measurement(
+            goal.task_id, str(value), trajectory_mod.parse_measurement(str(value))
+        )
+    except Exception as e:
+        logger.warning(f"Measurement capture write failed: {e}")
+        return False
+
+    logger.info(f"Captured measurement for goal {goal.name!r}: {value}")
+    msg = prompts.get_prompt("MSG_MEASUREMENT_LOGGED").format(
+        goal=goal.name, value=value, target=goal.target,
+    )
+    points = trajectory_mod.points_from_rows(memory.get_goal_measurements(goal.task_id))
+    note = trajectory_mod.trajectory_note(goal.target, goal.by, points, date.today())
+    if note:
+        msg += f"\n{note}"
+    telegram.send_message(msg)
+    return True
 
 
 def _handle_capture(
